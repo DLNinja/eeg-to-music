@@ -225,9 +225,14 @@ class MusicView(QWidget):
         # Initialize fluidsynth
         try:
             self.synth = fluidsynth.Synth()
-            self.synth.start(driver="pulseaudio")
+            
+            # Select backend based on OS Default
+            driver_name = "waveout" if os.name == "nt" else "pulseaudio"
+            self.synth.start(driver=driver_name, midi_driver="winmidi" if os.name == "nt" else "alsa_seq")
             
             soundfonts = [
+                "MuseScore_General.sf3", # Local downloaded SoundFont
+                # System Path Fallbacks
                 "/usr/share/soundfonts/freepats-general-midi.sf2", 
                 "/usr/share/sounds/sf2/FluidR3_GM.sf2", 
                 "/Library/Audio/Sounds/Banks/FluidR3_GM.sf2"

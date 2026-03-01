@@ -57,3 +57,5 @@ music/
 *.sf3
 *.mid
 *.midi
+*.zip
+test_*.py
