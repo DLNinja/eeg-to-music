@@ -48,9 +48,9 @@ venv.bak/
 Thumbs.db
 
 # Project-Specific Exclusions (Large files & generated data)
-models/
-data/
-music/
+/models/
+/data/
+/music/
 *.mat
 *.pt
 *.sf2
