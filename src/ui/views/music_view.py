@@ -9,6 +9,18 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import pyqtSignal, Qt, QThread, QMutex, QMutexLocker, QRectF, QPointF
 from PyQt5.QtGui import QPainter, QColor, QPen, QPolygonF
 
+class SuppressStderr:
+    """Context manager to suppress C-level stderr (ALSA/Jack warnings)."""
+    def __enter__(self):
+        self.null_fd = os.open(os.devnull, os.O_RDWR)
+        self.save_fd = os.dup(2)
+        os.dup2(self.null_fd, 2)
+
+    def __exit__(self, *_):
+        os.dup2(self.save_fd, 2)
+        os.close(self.null_fd)
+        os.close(self.save_fd)
+
 class PianoRollWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -224,24 +236,25 @@ class MusicView(QWidget):
         
         # Initialize fluidsynth
         try:
-            self.synth = fluidsynth.Synth()
-            self.synth.start(driver="pulseaudio")
-            
-            soundfonts = [
-                "/usr/share/soundfonts/freepats-general-midi.sf2", 
-                "/usr/share/sounds/sf2/FluidR3_GM.sf2", 
-                "/Library/Audio/Sounds/Banks/FluidR3_GM.sf2"
-            ]
-            self.sfid = -1
-            for sf in soundfonts:
-                if os.path.exists(sf):
-                    self.sfid = self.synth.sfload(sf)
-                    break
-                    
-            if self.sfid != -1:
-                self.synth.program_select(0, self.sfid, 0, 0)
-            else:
-                print("Warning: No soundfont found. Playback will be silent.")
+            with SuppressStderr():
+                self.synth = fluidsynth.Synth()
+                self.synth.start(driver="pulseaudio")
+                
+                soundfonts = [
+                    "/usr/share/soundfonts/freepats-general-midi.sf2", 
+                    "/usr/share/sounds/sf2/FluidR3_GM.sf2", 
+                    "/Library/Audio/Sounds/Banks/FluidR3_GM.sf2"
+                ]
+                self.sfid = -1
+                for sf in soundfonts:
+                    if os.path.exists(sf):
+                        self.sfid = self.synth.sfload(sf)
+                        break
+                        
+                if self.sfid != -1:
+                    self.synth.program_select(0, self.sfid, 0, 0)
+                else:
+                    print("Warning: No soundfont found. Playback will be silent.")
         except Exception as e:
             print(f"Warning: Failed to initialize FluidSynth: {e}")
             self.synth = None

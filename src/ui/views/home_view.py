@@ -1,13 +1,13 @@
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox
 from PyQt5.QtCore import pyqtSignal, Qt
+from PyQt5.QtGui import QFont
 
 class HomeView(QWidget):
-    # Emit signal to request navigation to 'plot' view
     navigate_to_plot_signal = pyqtSignal()
-    # Emit signal to request navigation to 'pipeline' view
     navigate_to_pipeline_signal = pyqtSignal()
-    # Emit signal to request navigation to 'music' view
     navigate_to_music_signal = pyqtSignal()
+    navigate_to_realtime_signal = pyqtSignal()
+    theme_changed_signal = pyqtSignal(str)  # "dark" or "light"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -34,14 +34,14 @@ class HomeView(QWidget):
 
         layout.addSpacing(40)
 
+        btn_font = QFont()
+        btn_font.setPointSize(12)
+
         # Plotter button
         self.plotter_btn = QPushButton("Go to EEG Signal Plotter")
         self.plotter_btn.setMinimumSize(300, 60)
-        btn_font = self.plotter_btn.font()
-        btn_font.setPointSize(12)
         self.plotter_btn.setFont(btn_font)
         self.plotter_btn.clicked.connect(self.navigate_to_plot_signal.emit)
-        
         layout.addWidget(self.plotter_btn, alignment=Qt.AlignCenter)
         
         layout.addSpacing(20)
@@ -51,7 +51,6 @@ class HomeView(QWidget):
         self.pipeline_btn.setMinimumSize(300, 60)
         self.pipeline_btn.setFont(btn_font)
         self.pipeline_btn.clicked.connect(self.navigate_to_pipeline_signal.emit)
-        
         layout.addWidget(self.pipeline_btn, alignment=Qt.AlignCenter)
         
         layout.addSpacing(20)
@@ -61,5 +60,35 @@ class HomeView(QWidget):
         self.music_btn.setMinimumSize(300, 60)
         self.music_btn.setFont(btn_font)
         self.music_btn.clicked.connect(self.navigate_to_music_signal.emit)
-        
         layout.addWidget(self.music_btn, alignment=Qt.AlignCenter)
+        
+        layout.addSpacing(20)
+        
+        # Real-Time Classifier button
+        self.realtime_btn = QPushButton("Real-Time Emotion Classifier")
+        self.realtime_btn.setMinimumSize(300, 60)
+        self.realtime_btn.setFont(btn_font)
+        self.realtime_btn.clicked.connect(self.navigate_to_realtime_signal.emit)
+        layout.addWidget(self.realtime_btn, alignment=Qt.AlignCenter)
+        
+        layout.addSpacing(40)
+        
+        # Theme selector
+        theme_bar = QHBoxLayout()
+        theme_bar.setAlignment(Qt.AlignCenter)
+        
+        theme_label = QLabel("Theme:")
+        theme_label.setFont(QFont("Sans", 11))
+        theme_bar.addWidget(theme_label)
+        
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItems(["Dark", "Light"])
+        self.theme_combo.setMinimumWidth(120)
+        self.theme_combo.setFont(QFont("Sans", 11))
+        self.theme_combo.currentTextChanged.connect(self._on_theme_changed)
+        theme_bar.addWidget(self.theme_combo)
+        
+        layout.addLayout(theme_bar)
+
+    def _on_theme_changed(self, text):
+        self.theme_changed_signal.emit(text.lower())
