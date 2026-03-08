@@ -50,7 +50,7 @@ Thumbs.db
 # Project-Specific Exclusions (Large files & generated data)
 models/
 data/
-music/
+/music/
 *.mat
 *.pt
 *.sf2
