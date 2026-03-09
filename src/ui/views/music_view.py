@@ -238,9 +238,14 @@ class MusicView(QWidget):
         try:
             with SuppressStderr():
                 self.synth = fluidsynth.Synth()
-                self.synth.start(driver="pulseaudio")
+                driver_name = "waveout" if os.name == "nt" else "pulseaudio"
+                self.synth.start(driver=driver_name, midi_driver="winmidi" if os.name == "nt" else "alsa_seq")
+                
+                # self.synth.start(driver="pulseaudio") # linux only
                 
                 soundfonts = [
+                    "MuseScore_General.sf3", # Local downloaded SoundFont
+                    # System Path Fallbacks
                     "/usr/share/soundfonts/freepats-general-midi.sf2", 
                     "/usr/share/sounds/sf2/FluidR3_GM.sf2", 
                     "/Library/Audio/Sounds/Banks/FluidR3_GM.sf2"
@@ -254,30 +259,7 @@ class MusicView(QWidget):
                 if self.sfid != -1:
                     self.synth.program_select(0, self.sfid, 0, 0)
                 else:
-                    print("Warning: No soundfont found. Playback will be silent.")
-            self.synth = fluidsynth.Synth()
-            
-            # Select backend based on OS Default
-            driver_name = "waveout" if os.name == "nt" else "pulseaudio"
-            self.synth.start(driver=driver_name, midi_driver="winmidi" if os.name == "nt" else "alsa_seq")
-            
-            soundfonts = [
-                "MuseScore_General.sf3", # Local downloaded SoundFont
-                # System Path Fallbacks
-                "/usr/share/soundfonts/freepats-general-midi.sf2", 
-                "/usr/share/sounds/sf2/FluidR3_GM.sf2", 
-                "/Library/Audio/Sounds/Banks/FluidR3_GM.sf2"
-            ]
-            self.sfid = -1
-            for sf in soundfonts:
-                if os.path.exists(sf):
-                    self.sfid = self.synth.sfload(sf)
-                    break
-                    
-            if self.sfid != -1:
-                self.synth.program_select(0, self.sfid, 0, 0)
-            else:
-                print("Warning: No soundfont found. Playback will be silent.")
+                    print("Warning: No soundfont found. Playback will be silent.")        
         except Exception as e:
             print(f"Warning: Failed to initialize FluidSynth: {e}")
             self.synth = None

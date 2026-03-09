@@ -1,10 +1,14 @@
 import sys
 import os
-import torch  # Import torch before PyQt5 to prevent DLL initialization conflicts
 from PyQt5.QtWidgets import QApplication
+from PyQt5.QtCore import Qt
 from src.ui.main_window import MainWindow
 
 def main():
+    # Enable high DPI scaling for Windows/4K displays
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    
     # Suppress Qt Wayland/XCB warnings by forcing xcb
     os.environ["QT_QPA_PLATFORM"] = "xcb"
     app = QApplication(sys.argv)

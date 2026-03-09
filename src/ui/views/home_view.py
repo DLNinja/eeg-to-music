@@ -91,13 +91,12 @@ class HomeView(QWidget):
         theme_bar.addWidget(self.theme_combo)
         
         layout.addLayout(theme_bar)
-
-    def _on_theme_changed(self, text):
-        self.theme_changed_signal.emit(text.lower())
         # About button
         self.about_btn = QPushButton("About Music Generation")
         self.about_btn.setMinimumSize(300, 60)
         self.about_btn.setFont(btn_font)
         self.about_btn.clicked.connect(self.navigate_to_about_signal.emit)
-        
         layout.addWidget(self.about_btn, alignment=Qt.AlignCenter)
+
+    def _on_theme_changed(self, text):
+        self.theme_changed_signal.emit(text.lower())

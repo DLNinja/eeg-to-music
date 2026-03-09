@@ -1,4 +1,4 @@
-# EEG to Music 🎵🧠
+# EEG to Music
 
 An end-to-end desktop application that takes raw EEG signals, classifies the underlying emotional state using a deep learning model (ResNet-18), and procedurally generates expressive MIDI music reflecting that emotion — all through a custom-built PyQt5 interface with real-time visualization.
 
@@ -100,11 +100,11 @@ python main.py
 
 ## Application Pages
 
-### 🏠 Home
+### Home
 
 The main menu. From here you can navigate to any of the four pages below, and switch between **Dark** and **Light** themes using the dropdown at the bottom.
 
-### 📈 EEG Signal Plotter
+### EEG Signal Plotter
 
 A standalone viewer for exploring raw EEG signals from loaded `.mat` files.
 
@@ -112,7 +112,7 @@ A standalone viewer for exploring raw EEG signals from loaded `.mat` files.
 - Choose channel display mode: **Single Channel**, **Channel Range**, or **All 62 Channels**
 - Toggle between **Full Signal** view and **Windowed View** with adjustable window size and a scrollbar for navigation
 
-### 🔬 Emotion Pipeline
+### Emotion Pipeline
 
 The full classification and music generation workflow:
 
@@ -122,7 +122,7 @@ The full classification and music generation workflow:
 4. Click **Generate Music** — maps the classified emotions to MIDI parameters and creates a `.mid` file
 5. The embedded **Music Player** appears with playback controls, a piano roll visualization, and a playhead synced to the emotion timeline
 
-### ⚡ Real-Time Emotion Classifier
+### Real-Time Emotion Classifier
 
 Simulates live EEG streaming with per-second classification:
 
@@ -139,7 +139,7 @@ Simulates live EEG streaming with per-second classification:
 
 **Controls:** Play / Pause / Stop, Speed (1×/2×/5×/10×), Channel selection (Single / Range / All)
 
-### 🎹 Music Player & Visualizer
+### Music Player & Visualizer
 
 A DAW-style MIDI player with:
 - File browser for `.mid` files
