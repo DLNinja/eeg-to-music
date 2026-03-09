@@ -7,11 +7,9 @@ from PyQt5.QtWidgets import (
     QGroupBox, QMessageBox, QDoubleSpinBox, QScrollBar
 )
 from PyQt5.QtCore import pyqtSignal, Qt
-from matplotlib.backends.backend_qt5agg import (
-    FigureCanvasQTAgg as FigureCanvas,
-    NavigationToolbar2QT as NavigationToolbar
-)
-from matplotlib.figure import Figure
+
+# Reuse the custom QPainter EEG plot widget from pipeline_view
+from src.ui.views.pipeline_view import EegPlotWidget
 
 class PlotView(QWidget):
     navigate_to_home_signal = pyqtSignal()
@@ -105,7 +103,7 @@ class PlotView(QWidget):
         
         self.label_window_size = QLabel("Sensitivity (s):")
         self.spin_window_size = QDoubleSpinBox()
-        self.spin_window_size.setRange(0.5, 60.0) # 0.5s up to 60s windows
+        self.spin_window_size.setRange(0.5, 60.0)
         self.spin_window_size.setValue(5.0)
         self.spin_window_size.setSingleStep(0.5)
         self.spin_window_size.valueChanged.connect(self.on_window_size_changed)
@@ -122,29 +120,16 @@ class PlotView(QWidget):
         
         main_layout.addLayout(controls_layout)
         
-        # Plot area
-        self.figure = Figure(figsize=(8, 5), dpi=100)
-        self.canvas = FigureCanvas(self.figure)
-        
-        # We can keep the navigation toolbar for fine-grained manual zooming/saving, 
-        # but the request emphasizes the scrollbar and sensitivity control.
-        self.toolbar = NavigationToolbar(self.canvas, self)
-        
-        main_layout.addWidget(self.toolbar)
-        main_layout.addWidget(self.canvas)
+        # Custom QPainter Plot Widget (replaces matplotlib)
+        self.eeg_plot = EegPlotWidget()
+        self.eeg_plot.setMinimumHeight(400)
+        main_layout.addWidget(self.eeg_plot, 1)  # stretch factor
         
         # Horizontal Scrollbar for Time navigation
         self.time_scrollbar = QScrollBar(Qt.Horizontal)
         self.time_scrollbar.setMinimum(0)
         self.time_scrollbar.valueChanged.connect(self.plot_trial)
         main_layout.addWidget(self.time_scrollbar)
-        
-        # Initial empty plot
-        self.ax = self.figure.add_subplot(111)
-        self.ax.set_title("No Data Loaded")
-        self.ax.set_xlabel("Time (s)")
-        self.ax.set_ylabel("Amplitude")
-        self.canvas.draw()
         
         # Init view mode states
         self.on_view_mode_changed()
@@ -166,7 +151,6 @@ class PlotView(QWidget):
         try:
             self.mat_data = scipy.io.loadmat(file_path)
             
-            # Extract keys that don't start with '__' (which are usually metadata like __header__)
             self.trial_keys = [k for k in self.mat_data.keys() if not k.startswith('__')]
             self.trial_keys.sort()
             
@@ -188,9 +172,7 @@ class PlotView(QWidget):
             self.trial_keys = []
             self.trial_combo.clear()
             self.trial_combo.setEnabled(False)
-            self.ax.clear()
-            self.ax.set_title("No Data Loaded")
-            self.canvas.draw()
+            self.eeg_plot.clear_data()
 
     def on_trial_selected(self, index):
         if index < 0 or not self.trial_keys or not self.mat_data:
@@ -199,7 +181,6 @@ class PlotView(QWidget):
         key = self.trial_keys[index]
         self.current_trial_data = self.mat_data[key]
         
-        # Update spinbox maximums based on data shape (channels)
         num_channels = self.current_trial_data.shape[0]
         self.spin_single.setMaximum(num_channels)
         self.spin_start.setMaximum(num_channels)
@@ -214,7 +195,6 @@ class PlotView(QWidget):
     def on_view_mode_changed(self):
         is_windowed = self.radio_window_view.isChecked()
         
-        # Enable/disable window controls
         self.label_window_size.setEnabled(is_windowed)
         self.spin_window_size.setEnabled(is_windowed)
         self.time_scrollbar.setEnabled(is_windowed)
@@ -241,9 +221,8 @@ class PlotView(QWidget):
             max_scroll = max(0, int((total_seconds - window_size) * self.sf))
             
             self.time_scrollbar.setMaximum(max_scroll)
-            # Adjust step sizes for smoother scrolling
-            self.time_scrollbar.setSingleStep(int(self.sf * 0.1)) # 0.1 seconds
-            self.time_scrollbar.setPageStep(int(self.sf * window_size * 0.5)) # Half window
+            self.time_scrollbar.setSingleStep(int(self.sf * 0.1))
+            self.time_scrollbar.setPageStep(int(self.sf * window_size * 0.5))
         else:
             self.time_scrollbar.setMaximum(0)
             self.time_scrollbar.setValue(0)
@@ -256,7 +235,6 @@ class PlotView(QWidget):
         num_channels = data.shape[0]
         num_samples = data.shape[1]
         
-        # Determine time window to plot
         if self.radio_full_view.isChecked():
             start_sample = 0
             end_sample = num_samples
@@ -265,47 +243,32 @@ class PlotView(QWidget):
             start_sample = self.time_scrollbar.value()
             end_sample = min(num_samples, start_sample + window_size_samples)
             
-        # Avoid empty slices
         if start_sample >= end_sample:
             return
             
         plot_data = data[:, start_sample:end_sample]
-        
-        # Time axis in seconds
         time_axis = np.arange(start_sample, end_sample) / self.sf
         
-        self.ax.clear()
+        channels = []
+        title = "EEG Signal"
         
         if self.radio_single.isChecked():
-            # Plot a single channel (1-indexed to 0-indexed)
             ch_idx = self.spin_single.value() - 1
             if 0 <= ch_idx < num_channels:
-                self.ax.plot(time_axis, plot_data[ch_idx, :], label=f"Ch {ch_idx+1}")
-                self.ax.set_title(f"EEG Signal (Trial: {self.trial_combo.currentText()}, Ch: {ch_idx+1})")
-                self.ax.set_ylabel("Amplitude")
+                channels.append((f"Ch {ch_idx+1}", plot_data[ch_idx, :]))
+                title = f"EEG Signal (Trial: {self.trial_combo.currentText()}, Ch: {ch_idx+1})"
         else:
-            # Plot a range of channels
             start_idx = self.spin_start.value() - 1
             end_idx = self.spin_end.value() - 1
-            
             if start_idx > end_idx:
-                start_idx, end_idx = end_idx, start_idx # Swap if inverted
-                
+                start_idx, end_idx = end_idx, start_idx
             start_idx = max(0, start_idx)
             end_idx = min(num_channels - 1, end_idx)
             
             for i, ch_idx in enumerate(range(start_idx, end_idx + 1)):
-                offset = i * 150 # Add visual separation
-                self.ax.plot(time_axis, plot_data[ch_idx, :] + offset, label=f"Ch {ch_idx+1}")
+                offset = i * 150
+                channels.append((f"Ch {ch_idx+1}", plot_data[ch_idx, :] + offset))
                 
-            self.ax.set_title(f"EEG Signal (Trial: {self.trial_combo.currentText()}, Chs: {start_idx+1}-{end_idx+1})")
-            self.ax.set_ylabel("Amplitude + Offset")
-            
-        self.ax.set_xlabel("Time (s)")
-        
-        # Set exact x-limits to prevent matplotlib from arbitrarily padding the axis, 
-        # which makes the scrolling look jumpy/inconsistent.
-        self.ax.set_xlim(time_axis[0], time_axis[-1])
-        
-        self.figure.tight_layout()
-        self.canvas.draw()
+            title = f"EEG Signal (Trial: {self.trial_combo.currentText()}, Chs: {start_idx+1}-{end_idx+1})"
+
+        self.eeg_plot.set_data(channels, time_axis, title)
