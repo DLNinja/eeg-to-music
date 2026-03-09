@@ -8,6 +8,8 @@ class HomeView(QWidget):
     navigate_to_pipeline_signal = pyqtSignal()
     # Emit signal to request navigation to 'music' view
     navigate_to_music_signal = pyqtSignal()
+    # Emit signal to request navigation to 'about' view
+    navigate_to_about_signal = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -63,3 +65,13 @@ class HomeView(QWidget):
         self.music_btn.clicked.connect(self.navigate_to_music_signal.emit)
         
         layout.addWidget(self.music_btn, alignment=Qt.AlignCenter)
+        
+        layout.addSpacing(20)
+        
+        # About button
+        self.about_btn = QPushButton("About Music Generation")
+        self.about_btn.setMinimumSize(300, 60)
+        self.about_btn.setFont(btn_font)
+        self.about_btn.clicked.connect(self.navigate_to_about_signal.emit)
+        
+        layout.addWidget(self.about_btn, alignment=Qt.AlignCenter)

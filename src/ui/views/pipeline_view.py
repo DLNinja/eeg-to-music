@@ -483,6 +483,14 @@ class PipelineView(QWidget):
         
     def update_music_playhead(self, time_s):
         if hasattr(self, 'music_playhead_line') and self.music_playhead_line is not None:
-            self.music_playhead_line.set_xdata([time_s, time_s])
+            # Scale the music playback time to match the EEG timeline length
+            # (Because MIDI generator changes BPM dynamically, music duration != EEG duration)
+            if hasattr(self.music_view, 'total_time_s') and self.music_view.total_time_s > 0 and self.emotion_probs is not None:
+                total_eeg_s = len(self.emotion_probs) * self.segment_len
+                mapped_time_s = time_s * (total_eeg_s / self.music_view.total_time_s)
+            else:
+                mapped_time_s = time_s
+                
+            self.music_playhead_line.set_xdata([mapped_time_s, mapped_time_s])
             self.music_playhead_line.set_visible(True)
             self.canvas.draw_idle()
