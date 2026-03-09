@@ -1,5 +1,6 @@
 import sys
 import os
+import torch  # Import torch before PyQt5 to prevent DLL initialization conflicts
 from PyQt5.QtWidgets import QApplication
 from src.ui.main_window import MainWindow
 

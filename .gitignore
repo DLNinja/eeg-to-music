@@ -57,3 +57,5 @@ Thumbs.db
 *.sf3
 *.mid
 *.midi
+*.zip
+test_*.py

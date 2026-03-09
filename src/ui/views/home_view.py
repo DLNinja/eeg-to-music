@@ -8,6 +8,8 @@ class HomeView(QWidget):
     navigate_to_music_signal = pyqtSignal()
     navigate_to_realtime_signal = pyqtSignal()
     theme_changed_signal = pyqtSignal(str)  # "dark" or "light"
+    # Emit signal to request navigation to 'about' view
+    navigate_to_about_signal = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -92,3 +94,10 @@ class HomeView(QWidget):
 
     def _on_theme_changed(self, text):
         self.theme_changed_signal.emit(text.lower())
+        # About button
+        self.about_btn = QPushButton("About Music Generation")
+        self.about_btn.setMinimumSize(300, 60)
+        self.about_btn.setFont(btn_font)
+        self.about_btn.clicked.connect(self.navigate_to_about_signal.emit)
+        
+        layout.addWidget(self.about_btn, alignment=Qt.AlignCenter)
