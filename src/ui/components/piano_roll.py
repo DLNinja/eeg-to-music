@@ -43,6 +43,9 @@ class PianoRollWidget(QWidget):
 
     def clear_notes(self):
         self.notes = []
+        self.current_time = 0.0
+        self.scroll_time = 0.0
+        self.total_time = 1.0
         self.update()
 
     def update_playhead(self, time_s):

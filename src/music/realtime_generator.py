@@ -114,6 +114,21 @@ class RealTimeMusicSynthesizer(QThread):
         self.is_playing = False
         self._all_notes_off()
 
+    def clear_queue(self):
+        with QMutexLocker(self.mutex):
+            self.update_queue.clear()
+
+    def reset_state(self):
+        """Resets the internal timeline and musical state without stopping the thread."""
+        with QMutexLocker(self.mutex):
+            self.playback_start_time = 0.0
+            self.update_queue.clear()
+            self.emotion_streak = 0
+            self.prev_dominant_idx = -1
+            self.current_chord_degree = 0
+            self.current_dominant_idx = -1
+            self._all_notes_off()
+
     def stop(self):
         self.is_running = False
         self.is_playing = False
@@ -328,6 +343,7 @@ class RealTimeMusicSynthesizer(QThread):
             ]
             arp_step = step_duration / len(arpeggio)
             for n in arpeggio:
+                if not self.is_playing: break
                 self.synth.noteon(0, int(n), chord_vel)
                 self.note_played.emit(0, int(n), chord_vel, chunk_rel_time, arp_step)
                 time.sleep(arp_step * 0.9)
@@ -401,6 +417,7 @@ class RealTimeMusicSynthesizer(QThread):
         # Play melody notes sequentially (blocking within this 1-second window)
         time_offset = 0.0
         for note, dur_sec in melody_notes_and_durations:
+            if not self.is_playing: break
             # Clamp so we never exceed the 1-second budget
             remaining = 1.0 - time_offset
             if remaining < 0.05:

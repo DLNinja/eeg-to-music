@@ -363,6 +363,7 @@ class MusicView(QWidget):
         self.time_label.setText(f"{cur_mins:02d}:{cur_secs:02d} / {total_mins:02d}:{total_secs:02d}")
         
         self.piano_roll.update_playhead(pos_s)
+        self.playback_progress_signal.emit(pos_s) # Ensure parent views are updated
         
         # Auto-scroll logic if zoomed strictly when playing
         if self.playback_thread is not None and self.playback_thread.isRunning() and not self.playback_thread.is_paused:
@@ -434,7 +435,11 @@ class MusicView(QWidget):
             self.playback_thread.wait()
             self.playback_thread = None
             
+        self.total_time_s = 0.0
+        self.midi_events = []
         self._update_time_ui(0.0)
+        self.track_scrollbar.setValue(0)
+        self.piano_roll.clear_notes()
             
         self.play_btn.setEnabled(True)
         self.pause_btn.setEnabled(False)

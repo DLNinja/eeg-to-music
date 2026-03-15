@@ -458,15 +458,12 @@ class RealTimeView(QWidget):
         self.is_playing = False
         self.waiting_for_worker = False
         self.stream_timer.stop()
-        self.synth.pause() # Stop playing notes, keep thread alive for next play
-        
-        
-        if self.worker_thread.isRunning():
-            self.worker.stop()
-            self.worker_thread.quit()
-            self.worker_thread.wait(2000)
+        self.synth.pause() # Stop playing notes
+        self.synth.reset_state() # Reset internal clock and musical state
         
         self.piano_roll.clear_notes()
+        self._update_time_ui_realtime(0, 0)
+        
         if was_playing and len(self.emotion_probs) > 0:
             self._enter_review_mode()
         
