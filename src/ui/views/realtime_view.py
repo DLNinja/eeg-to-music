@@ -17,6 +17,8 @@ from src.model.signal_processing import (
 )
 from src.model.emotion_classifier import EEGResNet
 from src.ui.views.pipeline_view import EegPlotWidget, EmotionPlotWidget
+from src.ui.components.piano_roll import PianoRollWidget
+from src.music.realtime_generator import RealTimeMusicSynthesizer
 
 
 # ──────────────────────────────────────────────────────
@@ -146,6 +148,11 @@ class RealTimeView(QWidget):
         self.worker.result_ready.connect(self._on_classification_result)
         self.worker.all_done.connect(self._on_worker_finished)
         
+        self.synth = RealTimeMusicSynthesizer()
+        self.synth.note_played.connect(self._on_note_played)
+        self.synth.state_update.connect(self._on_synth_state_update)
+        self.synth.start() # Start the background thread loop
+        
         self._setup_ui()
     
     def _load_model(self):
@@ -163,6 +170,7 @@ class RealTimeView(QWidget):
         # ── Top bar ──
         top_bar = QHBoxLayout()
         self.back_btn = QPushButton("← Back to Menu")
+        self.back_btn.clicked.connect(self.stop_playback)
         self.back_btn.clicked.connect(self.navigate_to_home_signal.emit)
         top_bar.addWidget(self.back_btn)
         
@@ -181,23 +189,29 @@ class RealTimeView(QWidget):
         
         # ── Playback controls ──
         controls_bar = QHBoxLayout()
+        controls_bar.addStretch()
         
+        # Style helpers
+        btn_style = "border-radius: 4px; font-weight: bold; padding: 6px 15px;"
+
         self.play_btn = QPushButton("▶ Play")
         self.play_btn.clicked.connect(self.start_playback)
         self.play_btn.setEnabled(False)
-        self.play_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
+        self.play_btn.setStyleSheet(f"background-color: #1a1a1a; color: #00FFB2; border: 1px solid #00FFB2; {btn_style}")
         controls_bar.addWidget(self.play_btn)
         
         self.pause_btn = QPushButton("⏸ Pause")
         self.pause_btn.clicked.connect(self.pause_playback)
         self.pause_btn.setEnabled(False)
+        self.pause_btn.setStyleSheet(f"background-color: #1a1a1a; color: #FF9800; border: 1px solid #FF9800; {btn_style}")
         controls_bar.addWidget(self.pause_btn)
         
         self.stop_btn = QPushButton("⏹ Stop")
         self.stop_btn.clicked.connect(self.stop_playback)
         self.stop_btn.setEnabled(False)
+        self.stop_btn.setStyleSheet(f"background-color: #1a1a1a; color: #F44336; border: 1px solid #F44336; {btn_style}")
         controls_bar.addWidget(self.stop_btn)
-        
+
         controls_bar.addSpacing(20)
         controls_bar.addWidget(QLabel("Speed:"))
         self.speed_combo = QComboBox()
@@ -212,6 +226,27 @@ class RealTimeView(QWidget):
         controls_bar.addWidget(self.status_label)
         
         main_layout.addLayout(controls_bar)
+
+        # ── Music Controls ──
+        music_bar = QHBoxLayout()
+        music_bar.addWidget(QLabel("🔈"))
+        self.vol_slider = QScrollBar(Qt.Horizontal)
+        self.vol_slider.setRange(0, 127)
+        self.vol_slider.setValue(100)
+        self.vol_slider.setFixedWidth(100)
+        self.vol_slider.valueChanged.connect(self._on_volume_changed)
+        music_bar.addWidget(self.vol_slider)
+
+        music_bar.addSpacing(20)
+        self.time_label = QLabel("00:00 / 00:00")
+        self.time_label.setStyleSheet("font-family: monospace; font-size: 14px;")
+        music_bar.addWidget(self.time_label)
+
+        self.music_time_slider = QScrollBar(Qt.Horizontal)
+        self.music_time_slider.setEnabled(False)
+        music_bar.addWidget(self.music_time_slider)
+        
+        main_layout.addLayout(music_bar)
         
         # ── Channel selection ──
         ch_bar = QHBoxLayout()
@@ -282,8 +317,13 @@ class RealTimeView(QWidget):
         main_layout.addWidget(self.eeg_plot, 1)
         
         self.emotion_plot = EmotionPlotWidget()
-        self.emotion_plot.setMinimumHeight(280)
+        self.emotion_plot.setMinimumHeight(200)
         main_layout.addWidget(self.emotion_plot, 1)
+        
+        # ── Piano Roll ──
+        self.piano_roll = PianoRollWidget()
+        self.piano_roll.setMinimumHeight(200)
+        main_layout.addWidget(self.piano_roll, 2)
         
         self.time_scrollbar = QScrollBar(Qt.Horizontal)
         self.time_scrollbar.setMinimum(0)
@@ -400,12 +440,15 @@ class RealTimeView(QWidget):
             
             if not self.worker_thread.isRunning():
                 self.worker_thread.start()
+                
+            self.synth.play()
             
             self.stream_timer.start(self.timer_interval_ms)
     
     def pause_playback(self):
         self.is_playing = False
         self.stream_timer.stop()
+        self.synth.pause()
         self.play_btn.setEnabled(True)
         self.play_btn.setText("▶ Resume")
         self.pause_btn.setEnabled(False)
@@ -415,12 +458,15 @@ class RealTimeView(QWidget):
         self.is_playing = False
         self.waiting_for_worker = False
         self.stream_timer.stop()
+        self.synth.pause() # Stop playing notes, keep thread alive for next play
+        
         
         if self.worker_thread.isRunning():
             self.worker.stop()
             self.worker_thread.quit()
             self.worker_thread.wait(2000)
         
+        self.piano_roll.clear_notes()
         if was_playing and len(self.emotion_probs) > 0:
             self._enter_review_mode()
         
@@ -438,6 +484,9 @@ class RealTimeView(QWidget):
     
     def _on_classification_result(self, features, probs):
         self.emotion_probs.append(probs)
+        
+        # Send to synthesizer
+        self.synth.update_emotion(probs, features)
         
         n_segs = len(self.emotion_probs)
         
@@ -472,7 +521,7 @@ class RealTimeView(QWidget):
         self.play_btn.setText("▶ Replay")
         self.pause_btn.setEnabled(False)
         self.stop_btn.setEnabled(False)
-    
+
     # ── Review mode ──────────────────────────────────────
     
     def _enter_review_mode(self):
@@ -643,3 +692,32 @@ class RealTimeView(QWidget):
         self.status_label.setText(
             f"⏱ {elapsed:.1f}s / {total:.1f}s | Segments: {n_segs}{dominant}"
         )
+
+    def _on_note_played(self, channel, pitch, velocity, start_time, duration):
+        # We only really care about the total time for the piano roll to scale
+        # If the total time isn't set yet, we might need a dynamic one
+        total_s = self.current_trial_data.shape[1] / self.sf if self.current_trial_data is not None else 60.0
+        self.piano_roll.total_time = total_s
+        self.piano_roll.add_note(start_time, duration, pitch, velocity)
+        self.piano_roll.update_playhead(start_time)
+        
+        # Update time UI
+        self._update_time_ui_realtime(start_time, total_s)
+
+    def _on_synth_state_update(self, mode, chord_type, bpm):
+        # Could show this in status or a specialized label
+        pass
+
+    def _on_volume_changed(self, value):
+        self.synth.set_volume(value)
+
+    def _update_time_ui_realtime(self, pos_s, total_s):
+        pos_s = min(pos_s, total_s)
+        self.music_time_slider.setRange(0, int(total_s * 1000))
+        self.music_time_slider.setValue(int(pos_s * 1000))
+        
+        cur_mins = int(pos_s // 60)
+        cur_secs = int(pos_s % 60)
+        total_mins = int(total_s // 60)
+        total_secs = int(total_s % 60)
+        self.time_label.setText(f"{cur_mins:02d}:{cur_secs:02d} / {total_mins:02d}:{total_secs:02d}")
