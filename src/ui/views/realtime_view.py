@@ -1,4 +1,5 @@
 import os
+import time
 import scipy.io
 import numpy as np
 import torch
@@ -82,6 +83,8 @@ class ClassificationWorker(QObject):
         filtered, self.filter_zi = filter_segment(segment, self.sos, self.filter_zi)
         features = extract_single_window_features(filtered, self.stft_n, self.sf)
         self.raw_features.append(features)
+        if len(self.raw_features) > 20: # Limit history
+            self.raw_features.pop(0)
         
         features_arr = np.array(self.raw_features)
         T = features_arr.shape[0]
@@ -122,6 +125,7 @@ class RealTimeView(QWidget):
         self.waiting_for_worker = False  # True when EEG done but worker still processing
         self.review_mode = False
         self.playhead_idx = 0
+        self.playback_start_wall_time = 0.0
         self.total_segments_expected = 0
         self.sample_buffer = None
         self.buffer_pos = 0
@@ -130,6 +134,8 @@ class RealTimeView(QWidget):
         self.speed_multiplier = 1
         self.timer_interval_ms = 50
         self.samples_per_tick = int(self.sf * self.timer_interval_ms / 1000)
+        
+        self.tick_count = 0 # For plot throttling
         
         self.stream_timer = QTimer(self)
         self.stream_timer.timeout.connect(self._on_timer_tick)
@@ -415,6 +421,7 @@ class RealTimeView(QWidget):
     
     def _reset_streaming_state(self):
         self.playhead_idx = 0
+        self.playback_start_wall_time = time.time()
         self.sample_buffer = np.zeros((n_channels, self.window_samples))
         self.buffer_pos = 0
         self.emotion_probs = []
@@ -429,11 +436,13 @@ class RealTimeView(QWidget):
             return
         
         if not self.is_playing:
-            if self.playhead_idx == 0:
+            if self.playhead_idx == 0: # Only reset if starting from beginning
                 self._reset_streaming_state()
                 self._exit_review_mode()
             
             self.is_playing = True
+            # Adjust start time if we are resuming
+            self.playback_start_wall_time = time.time() - (self.playhead_idx / self.sf / self.speed_multiplier)
             self.play_btn.setEnabled(False)
             self.pause_btn.setEnabled(True)
             self.stop_btn.setEnabled(True)
@@ -619,8 +628,19 @@ class RealTimeView(QWidget):
         
         total_samples = self.current_trial_data.shape[1]
         
-        n_new = min(self.samples_per_tick, total_samples - self.playhead_idx)
-        if n_new <= 0:
+        # Sync with wall-clock to prevent drift
+        # Calculate where we SHOULD be in the data based on actual time elapsed
+        elapsed_actual = time.time() - self.playback_start_wall_time
+        target_playhead = int(elapsed_actual * self.sf * self.speed_multiplier)
+        
+        # Number of new samples to process this tick
+        n_new = target_playhead - self.playhead_idx
+        
+        # Safety clamp: process at least some, at most a reasonable chunk
+        # Increased to 20x to allow faster recovery from lag
+        n_new = max(0, min(n_new, 20 * self.samples_per_tick)) 
+        
+        if self.playhead_idx >= total_samples:
             # EEG playback done — tell worker to drain, then wait
             self.is_playing = False
             self.stream_timer.stop()
@@ -642,9 +662,14 @@ class RealTimeView(QWidget):
                 # All segments already classified
                 self._on_worker_finished()
             return
+
+        if n_new <= 0:
+            return
         
-        new_data = self.current_trial_data[:, self.playhead_idx:self.playhead_idx + n_new]
-        self.playhead_idx += n_new
+        # Check if we have enough data left
+        take_from_data = min(n_new, total_samples - self.playhead_idx)
+        new_data = self.current_trial_data[:, self.playhead_idx:self.playhead_idx + take_from_data]
+        self.playhead_idx += take_from_data
         
         # Feed into 1-second buffer
         remaining = n_new
@@ -664,18 +689,21 @@ class RealTimeView(QWidget):
                 self.buffer_pos = 0
         
         # Update EEG plot with selected channels — show last 5 seconds
-        display_window = 5 * self.sf
-        start = max(0, self.playhead_idx - display_window)
-        end = self.playhead_idx
-        
-        time_axis = np.arange(start, end) / self.sf
-        channels = self._get_selected_channels()
-        ch_data = [(label, self.current_trial_data[idx, start:end]) for label, idx in channels]
-        
-        self.eeg_plot.set_data(
-            ch_data, time_axis,
-            f"EEG Signal — Real-Time ({self.playhead_idx / self.sf:.1f}s)"
-        )
+        # Optimization: Only update plot every 3 ticks (~150ms) to save CPU
+        self.tick_count += 1
+        if self.tick_count % 3 == 0:
+            display_window = 5 * self.sf
+            start = max(0, self.playhead_idx - display_window)
+            end = self.playhead_idx
+            
+            time_axis = np.arange(start, end) / self.sf
+            channels = self._get_selected_channels()
+            ch_data = [(label, self.current_trial_data[idx, start:end]) for label, idx in channels]
+            
+            self.eeg_plot.set_data(
+                ch_data, time_axis,
+                f"EEG Signal — Real-Time ({self.playhead_idx / self.sf:.1f}s)"
+            )
         
         # Update status
         elapsed = self.playhead_idx / self.sf

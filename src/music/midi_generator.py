@@ -157,20 +157,33 @@ def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offs
         tempo = bpm2tempo(int(current_bpm))
         chord_track.append(MetaMessage('set_tempo', tempo=tempo, time=0))
 
+        # Dynamic ticks_per_step to ensure 1 iteration = exactly 1 second
+        # 1 second = (current_bpm / 60) beats
+        # ticks_per_step = (current_bpm / 60) * ticks_per_beat
+        ticks_per_step = int((current_bpm / 60.0) * ticks_per_beat)
+
         # Velocity mapping (30 to 110)
         velocity = max(30, min(110, int(40 + (arousal * 70))))
         
         # Rhythmic Selection (Streak based diversification)
         if emotion_streak > 4 and random.random() < 0.3:
             # Introduce a rhythmic breakdown / pause measure every so often
-            chosen_rhythm = [480, 480] if arousal < 0.5 else [240, 240, 480]
+            # Proportions of ticks_per_step
+            chosen_rhythm_ratios = [0.5, 0.5] if arousal < 0.5 else [0.25, 0.25, 0.5]
         else:
             if arousal > 0.7:
-                chosen_rhythm = random.choice(rhythms['fast'])
+                # Fast rhythms: proportions of 1/4 or 1/8 beats
+                chosen_rhythm_ratios = [0.25, 0.25, 0.25, 0.25] if random.random() > 0.5 else [0.125, 0.125, 0.25, 0.5]
             elif arousal > 0.4:
-                chosen_rhythm = random.choice(rhythms['med'])
+                chosen_rhythm_ratios = [0.5, 0.25, 0.25] if random.random() > 0.5 else [0.333, 0.333, 0.333]
             else:
-                chosen_rhythm = random.choice(rhythms['slow'])
+                chosen_rhythm_ratios = [1.0] if random.random() > 0.5 else [0.5, 0.5]
+
+        # Convert ratios to actual ticks for this specific step
+        chosen_rhythm = [int(r * ticks_per_step) for r in chosen_rhythm_ratios]
+        # Adjust last note to fix rounding errors and ensure sum is exactly ticks_per_step
+        if sum(chosen_rhythm) != ticks_per_step:
+            chosen_rhythm[-1] += (ticks_per_step - sum(chosen_rhythm))
 
         # 3. CHORD & ACCOMPANIMENT GENERATION (Differentiation)
         
@@ -232,7 +245,7 @@ def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offs
             
         elif dominant_idx == 1: # SAD: Cascading Broken Arpeggios (Downward focus)
             chord_vel = max(20, velocity - 10)
-            step_time = int(ticks_per_step // 4) # 4 notes, explicitly integer division
+            arp_step_time = int(ticks_per_step // 4) 
             
             # Root, 3rd, 5th, 3rd (Shifted down one octave diatonically)
             arpeggio = [
@@ -242,9 +255,11 @@ def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offs
                 pool[max(0, chord_root_idx - 7 + 2)]
             ]
             
-            for n in arpeggio:
+            for i, n in enumerate(arpeggio):
                 chord_track.append(Message('note_on', note=n, velocity=chord_vel, time=0)) 
-                chord_track.append(Message('note_off', note=n, velocity=0, time=int(step_time)))
+                # Last note should fill the remaining time in this 1s window
+                this_step = arp_step_time if i < 3 else (ticks_per_step - (arp_step_time * 3))
+                chord_track.append(Message('note_off', note=n, velocity=0, time=int(this_step)))
                 
         elif dominant_idx == 2: # FEAR: Subtle, eerie, creeping long sustains
             chord_vel = max(10, velocity - 30)  # Very quiet, subtle tension
