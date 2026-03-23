@@ -64,6 +64,8 @@ class RealTimeMusicSynthesizer(QThread):
         self.tracker = EmotionTracker(window_size=10, spike_threshold=0.3)
         self.markov_engine = MarkovEngine()
         self.prev_melody_interval = 0
+        self.has_set_base_key = False
+        self.current_prog_list = []
         self.synth = None
 
     def _init_synth(self):
@@ -89,8 +91,10 @@ class RealTimeMusicSynthesizer(QThread):
                         break
                         
                 if sfid != -1:
-                    self.synth.program_select(0, sfid, 0, 0)
-                    self.synth.program_select(1, sfid, 0, 0)
+                    self.synth.program_select(0, sfid, 0, 88) # Pad 1 (New Age) for Chords
+                    self.synth.program_select(1, sfid, 0, 0)  # Acoustic Grand Piano for Melody
+                    self.synth.program_select(2, sfid, 0, 38) # Synth Bass 1 for Bass
+                    self.synth.program_select(9, sfid, 128, 0) # Standard Drum Kit for Percussion
                 else:
                     print("Warning: RealTimeSynth - No soundfont found.")
         except Exception as e:
@@ -234,6 +238,29 @@ class RealTimeMusicSynthesizer(QThread):
             self.emotion_streak = 0
         self.prev_dominant_idx = dominant_idx
 
+        # ── 1.1 Emotion Category & Schubert Base Key Initialization ──
+        if macro_v > 0.4 and macro_a > 0.0:
+            emotion_cat = 'happy'
+        elif macro_v < -0.3 and macro_a < 0.0:
+            emotion_cat = 'sad'
+        elif macro_v < -0.3 and macro_a >= 0.0:
+            emotion_cat = 'fear'
+        else:
+            emotion_cat = 'neutral'
+
+        if not self.has_set_base_key:
+            # Schubert's Characterizations: 12 distinct keys explicitly mapped 3 per emotion
+            if emotion_cat == 'happy':
+                self.base_key_offset = random.choice([2, 4, 9])  # D, E, A
+            elif emotion_cat == 'fear':
+                self.base_key_offset = random.choice([6, 8, 10]) # F#, G#, Bb
+            elif emotion_cat == 'sad':
+                self.base_key_offset = random.choice([1, 7, 11]) # Db, G, B
+            elif emotion_cat == 'neutral':
+                self.base_key_offset = random.choice([0, 3, 5])  # C, Eb, F
+            self.fundamental_bass_root = 36 + self.base_key_offset
+            self.has_set_base_key = True
+
         # ── 2. Mode & Chord Quality (driven entirely by MACRO valence) ──
         if macro_v > 0.5:
             current_mode = 'lydian' if macro_v > 0.75 else 'ionian'
@@ -292,20 +319,11 @@ class RealTimeMusicSynthesizer(QThread):
             )
 
         # ── 6. Harmonic Progression (Emotion-Specific Categories) ──
-        if macro_v > 0.4 and macro_a > 0.0:
-            emotion_cat = 'happy'
-        elif macro_v < -0.3 and macro_a < 0.0:
-            emotion_cat = 'sad'
-        elif macro_v < -0.3 and macro_a >= 0.0:
-            emotion_cat = 'fear'
-        else:
-            emotion_cat = 'neutral'
-
         PROGRESSIONS = {
-            'happy':   [0, 4, 5, 3],
-            'sad':     [0, 6, 5, 4],
-            'fear':    [0, 0, 1, 0],
-            'neutral': [1, 0, 3, 4],
+            'happy':   [[0, 4, 5, 3], [0, 5, 3, 4], [0, 3, 5, 4]],
+            'sad':     [[0, 6, 5, 4], [0, 4, 5, 6], [0, 3, 4, 4]],
+            'fear':    [[0, 0, 1, 0], [0, 1, 0, 1], [0, 0, 0, 1]],
+            'neutral': [[1, 0, 3, 4], [3, 4, 0, 0], [0, 1, 3, 4]],
         }
 
         if macro_a > 0.6:
@@ -315,13 +333,20 @@ class RealTimeMusicSynthesizer(QThread):
         else:
             harmonic_rhythm = 4
 
+        is_new_chord = False
+
         if self.current_dominant_idx == -1 or self.emotion_streak == 0:
             self.progression_step = 0
-            self.current_chord_degree = PROGRESSIONS[emotion_cat][self.progression_step]
+            self.current_prog_list = random.choice(PROGRESSIONS[emotion_cat])
+            self.current_chord_degree = self.current_prog_list[self.progression_step]
             self.current_dominant_idx = dominant_idx
+            is_new_chord = True
         elif self.emotion_streak % harmonic_rhythm == 0:
             self.progression_step = (self.progression_step + 1) % 4
-            self.current_chord_degree = PROGRESSIONS[emotion_cat][self.progression_step]
+            if self.progression_step == 0:
+                self.current_prog_list = random.choice(PROGRESSIONS[emotion_cat])
+            self.current_chord_degree = self.current_prog_list[self.progression_step]
+            is_new_chord = True
 
         chord_root_idx = 14 + self.current_chord_degree
         chord_notes = get_chord(current_mode, pool[chord_root_idx], chord_type)
@@ -337,6 +362,8 @@ class RealTimeMusicSynthesizer(QThread):
                 micro_chord_boost = int(micro_intensity * 40)
 
             chord_vel = min(110, max(20, velocity - 10 + micro_chord_boost))
+            if emotion_cat == 'sad':
+                chord_vel = min(127, chord_vel + 20)
 
             if emotion_cat == 'happy':
                 # sustained_block
@@ -414,10 +441,88 @@ class RealTimeMusicSynthesizer(QThread):
                 is_rest = (abs(macro_v) < 0.2 and abs(macro_a) < 0.2
                            and random.random() < 0.3)
                 if not is_rest:
+                    melody_vel = int(velocity)
+                    if emotion_cat == 'sad':
+                        melody_vel = min(127, melody_vel + 20)
+                        
                     t_on  = chunk_start_time + time_offset
                     t_off = t_on + (dur_sec * 0.99)
                     e_ts  = eeg_timestamp + time_offset
-                    self.note_queue.append((t_on,  1, int(note), int(velocity), dur_sec, True,  e_ts))
-                    self.note_queue.append((t_off, 1, int(note), 0,             0,       False, e_ts + dur_sec * 0.99))
+                    self.note_queue.append((t_on,  1, int(note), melody_vel, dur_sec, True,  e_ts))
+                    self.note_queue.append((t_off, 1, int(note), 0,          0,       False, e_ts + dur_sec * 0.99))
 
                 time_offset += dur_sec
+
+            # ── Bass (Channel 2) ──
+            # Locks to the root of the chord (transposed down 2 octaves)
+            bass_root = max(0, int(chord_notes[0]) - 24)
+            bass_vel = max(40, chord_vel + 10)
+            
+            # Subdivision logic based on Arousal
+            if emotion_cat in ['happy', 'fear']: 
+                num_hits = 4 # High arousal: 8th notes (4 hits per 1-second chunk)
+            else:
+                num_hits = 1 # Low arousal: Whole or Half notes (1 hit per chunk)
+                
+            hit_dur = 1.0 / num_hits
+            for i in range(num_hits):
+                t_on = chunk_start_time + (i * hit_dur)
+                t_off = t_on + (hit_dur * 0.9)
+                e_ts = eeg_timestamp + (i * hit_dur)
+                
+                note = bass_root
+                if num_hits == 4 and i % 2 != 0 and random.random() < 0.2:
+                    note += 12 # Occasional energetic octave jump
+                    
+                self.note_queue.append((t_on,  2, note, bass_vel, hit_dur, True, e_ts))
+                self.note_queue.append((t_off, 2, note, 0,        0,       False, e_ts + hit_dur * 0.9))
+
+            # ── Drums (Channel 9) ──
+            # Standard MIDI drums: Kick = 36, Orchestral Bass = 35, Rimshot = 37, Snare = 38, Hi-hat = 42, Low Tom = 45, Crash = 49, Ride = 51
+            drum_vel = min(127, chord_vel + 20)
+            
+            if emotion_cat == 'happy':
+                # Driving pop beat. 2 beats per chunk at 120bpm
+                # Kick on beat 1, Snare on beat 2
+                self.note_queue.append((chunk_start_time, 9, 36, drum_vel, 0.1, True, eeg_timestamp))
+                self.note_queue.append((chunk_start_time + 0.1, 9, 36, 0, 0, False, eeg_timestamp + 0.1))
+                self.note_queue.append((chunk_start_time + sec_per_beat, 9, 38, drum_vel, 0.1, True, eeg_timestamp + sec_per_beat))
+                self.note_queue.append((chunk_start_time + sec_per_beat + 0.1, 9, 38, 0, 0, False, eeg_timestamp + sec_per_beat + 0.1))
+                
+                # 8th note hats
+                for i in range(4):
+                    t = chunk_start_time + (i * (sec_per_beat / 2))
+                    self.note_queue.append((t, 9, 42, max(30, drum_vel - 20), 0.1, True, eeg_timestamp + (i * (sec_per_beat / 2))))
+                    self.note_queue.append((t + 0.1, 9, 42, 0, 0, False, eeg_timestamp + (i * (sec_per_beat / 2)) + 0.1))
+            
+            elif emotion_cat == 'fear':
+                # Fast 16th note nervous hi-hats
+                for i in range(8):
+                    t = chunk_start_time + (i * (sec_per_beat / 4))
+                    v = max(40, drum_vel - 30 + random.randint(-10, 10)) # jittery velocity
+                    self.note_queue.append((t, 9, 42, v, 0.05, True, eeg_timestamp + (i * (sec_per_beat / 4))))
+                    self.note_queue.append((t + 0.05, 9, 42, 0, 0, False, eeg_timestamp + (i * (sec_per_beat / 4)) + 0.05))
+                # Occasional thumps
+                if random.random() < 0.3:
+                    self.note_queue.append((chunk_start_time, 9, 36, drum_vel, 0.2, True, eeg_timestamp))
+                    self.note_queue.append((chunk_start_time + 0.2, 9, 36, 0, 0, False, eeg_timestamp + 0.2))
+                    
+            elif emotion_cat == 'sad':
+                # Dramatic Orchestral Accent on downbeats
+                if is_new_chord and random.random() < 0.4:
+                    self.note_queue.append((chunk_start_time, 9, 36, drum_vel + 10, 0.5, True, eeg_timestamp)) # Kick
+                    self.note_queue.append((chunk_start_time + 0.5, 9, 36, 0, 0, False, eeg_timestamp + 0.5))
+                    self.note_queue.append((chunk_start_time, 9, 45, drum_vel, 0.5, True, eeg_timestamp)) # Low Tom
+                    self.note_queue.append((chunk_start_time + 0.5, 9, 45, 0, 0, False, eeg_timestamp + 0.5))
+                    self.note_queue.append((chunk_start_time, 9, 49, max(40, drum_vel - 10), 0.5, True, eeg_timestamp)) # Crash Cymbal
+                    self.note_queue.append((chunk_start_time + 0.5, 9, 49, 0, 0, False, eeg_timestamp + 0.5))
+            
+            elif emotion_cat == 'neutral':
+                # Cinematic half-time orchestral feel
+                # Beat 1: Orchestral Bass Drum / Deep Timpani (35)
+                # Beat 3 (which is sec_per_beat): Soft Suspended Ride Cymbal (51)
+                if is_new_chord:
+                    self.note_queue.append((chunk_start_time, 9, 35, max(30, drum_vel - 10), 1.0, True, eeg_timestamp))
+                    self.note_queue.append((chunk_start_time + 1.0, 9, 35, 0, 0, False, eeg_timestamp + 1.0))
+                self.note_queue.append((chunk_start_time + sec_per_beat, 9, 51, max(20, drum_vel - 30), 1.0, True, eeg_timestamp + sec_per_beat))
+                self.note_queue.append((chunk_start_time + sec_per_beat + 1.0, 9, 51, 0, 0, False, eeg_timestamp + sec_per_beat + 1.0))

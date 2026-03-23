@@ -44,14 +44,18 @@ def get_chord(mode_name, root_midi, chord_type="triad"):
 def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offset=0, filename="eeg_music.mid"):
     mid = MidiFile()
 
-    # left hand chords + right hand melody
+    # 4-Part Orchestration
     chord_track = MidiTrack()
     melody_track = MidiTrack()
-    mid.tracks.extend([chord_track, melody_track])
+    bass_track = MidiTrack()
+    drums_track = MidiTrack()
+    mid.tracks.extend([chord_track, melody_track, bass_track, drums_track])
     
-    # Explicitly set the instrument to Acoustic Grand Piano (Program 0) for both tracks
-    chord_track.append(Message('program_change', program=0, time=0))
-    melody_track.append(Message('program_change', program=0, time=0))
+    # Set standard MIDI Programs (Instruments)
+    chord_track.append(Message('program_change', channel=0, program=88, time=0))  # Pad 1
+    melody_track.append(Message('program_change', channel=1, program=0, time=0))  # Piano
+    bass_track.append(Message('program_change', channel=2, program=38, time=0))   # Synth Bass 1
+    # Channel 9 is implicitly percussion
 
     ticks_per_beat = 480
     ticks_per_step = ticks_per_beat * 2 # each time step holds for 2 beats
@@ -101,7 +105,31 @@ def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offs
         prev_dominant_idx = dominant_idx
 
         # --------------------------------------------------------------------------
-        # 1. MODE SELECTION
+        # 1.1 Emotion Category & Schubert Base Key Initialization
+        if v > 0.4 and a > 0.0:
+            emotion_cat = 'happy'
+        elif v < -0.3 and a < 0.0:
+            emotion_cat = 'sad'
+        elif v < -0.3 and a >= 0.0:
+            emotion_cat = 'fear'
+        else:
+            emotion_cat = 'neutral'
+            
+        if not has_set_base_key:
+            # Schubert's Characterizations: 12 distinct keys explicitly mapped 3 per emotion
+            if emotion_cat == 'happy':
+                base_key_offset += random.choice([2, 4, 9])  # D, E, A
+            elif emotion_cat == 'fear':
+                base_key_offset += random.choice([6, 8, 10]) # F#, G#, Bb
+            elif emotion_cat == 'sad':
+                base_key_offset += random.choice([1, 7, 11]) # Db, G, B
+            elif emotion_cat == 'neutral':
+                base_key_offset += random.choice([0, 3, 5])  # C, Eb, F
+            fundamental_bass_root = 36 + base_key_offset
+            has_set_base_key = True
+
+        # --------------------------------------------------------------------------
+        # 1.2 MODE SELECTION
         # Valence determines the "color" (Scale)
         is_neutral = abs(v) < 0.2 and abs(a) < 0.2
 
@@ -231,29 +259,12 @@ def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offs
         if sum(chosen_rhythm) != ticks_per_step:
             chosen_rhythm[-1] += (ticks_per_step - sum(chosen_rhythm))
 
-        # -------------------------------------------------------------------------
-        # 3. CHORD & ACCOMPANIMENT GENERATION (Block styles only)
-
-        # Map macro V/A to discrete emotional categories for the progression
-        if v > 0.4 and a > 0.0:
-            emotion_cat = 'happy'
-        elif v < -0.3 and a < 0.0:
-            emotion_cat = 'sad'
-        elif v < -0.3 and a >= 0.0:
-            emotion_cat = 'fear'
-        else:
-            emotion_cat = 'neutral'
-
         # --- EMOTION SPECIFIC CHORD PROGRESSIONS ---
         PROGRESSIONS = {
-            # Happy: classic pop I-V-vi-IV (Lydian/Ionian degrees)
-            'happy':   [0, 4, 5, 3],
-            # Sad: Andalusian descending cadence i-bVII-VI-V (Aeolian degrees)
-            'sad':     [0, 6, 5, 4],
-            # Fear: mostly drones on the root, occasionally touching bII (Phrygian)
-            'fear':    [0, 0, 1, 0],
-            # Neutral: Dorian/Mixolydian shifts (II-I-IV-V)
-            'neutral': [1, 0, 3, 4],
+            'happy':   [[0, 4, 5, 3], [0, 5, 3, 4], [0, 3, 5, 4]],
+            'sad':     [[0, 6, 5, 4], [0, 4, 5, 6], [0, 3, 4, 4]],
+            'fear':    [[0, 0, 1, 0], [0, 1, 0, 1], [0, 0, 0, 1]],
+            'neutral': [[1, 0, 3, 4], [3, 4, 0, 0], [0, 1, 3, 4]],
         }
 
         # Harmonic Rhythm: How many steps to hold a chord based on Macro Arousal
@@ -264,14 +275,20 @@ def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offs
         else:
             harmonic_rhythm = 4
 
+        is_new_chord = False
+
         # Advance the progression sequence
         if t == 0 or emotion_streak == 0:
             progression_step = 0
-            # On state change, force chord change immediately
-            current_chord_degree = PROGRESSIONS[emotion_cat][progression_step]
+            current_prog_list = random.choice(PROGRESSIONS[emotion_cat])
+            current_chord_degree = current_prog_list[progression_step]
+            is_new_chord = True
         elif emotion_streak % harmonic_rhythm == 0:
             progression_step = (progression_step + 1) % 4
-            current_chord_degree = PROGRESSIONS[emotion_cat][progression_step]
+            if progression_step == 0:
+                current_prog_list = random.choice(PROGRESSIONS[emotion_cat])
+            current_chord_degree = current_prog_list[progression_step]
+            is_new_chord = True
         else:
             # Hold chord
             pass
@@ -292,6 +309,8 @@ def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offs
             chord_notes = [pool[chord_root_idx], pool[chord_root_idx + 2], pool[chord_root_idx + 4]]
 
         chord_vel = max(20, velocity - 10)
+        if emotion_cat == 'sad':
+            chord_vel = min(127, chord_vel + 20)
 
         # --- ACCOMPANIMENT STYLES (NO ARPEGGIOS) ---
         if emotion_cat == 'happy':
@@ -419,11 +438,91 @@ def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offs
             motif_buffer[:] = new_motif
 
         for note, duration in melody_notes_and_durations:
+            melody_vel = int(velocity)
+            if emotion_cat == 'sad':
+                melody_vel = min(127, melody_vel + 20)
+                
             if note is None:
-                melody_track.append(Message('note_off', note=0, velocity=0, time=int(duration)))
+                melody_track.append(Message('note_off', channel=1, note=0, velocity=0, time=int(duration)))
             else:
-                melody_track.append(Message('note_on',  note=int(note), velocity=int(velocity), time=0))
-                melody_track.append(Message('note_off', note=int(note), velocity=0,              time=int(duration)))
+                melody_track.append(Message('note_on',  channel=1, note=int(note), velocity=melody_vel, time=0))
+                melody_track.append(Message('note_off', channel=1, note=int(note), velocity=0,              time=int(duration)))
+
+        # -------------------------------------------------------------------------
+        # 5. BASS GENERATION (Channel 2)
+        bass_root = max(0, int(chord_notes[0]) - 24)
+        bass_vel = max(40, chord_vel + 10)
+        
+        if emotion_cat in ['happy', 'fear']: 
+            num_hits = 4
+        else:
+            num_hits = 1
+            
+        hit_ticks = ticks_per_step / num_hits
+        for i in range(num_hits):
+            n = bass_root
+            if num_hits == 4 and i % 2 != 0 and random.random() < 0.2:
+                n += 12
+            bass_track.append(Message('note_on',  channel=2, note=n, velocity=bass_vel, time=0))
+            bass_track.append(Message('note_off', channel=2, note=n, velocity=0, time=int(hit_ticks)))
+
+        # -------------------------------------------------------------------------
+        # 6. DRUMS GENERATION (Channel 9)
+        drum_vel = min(127, chord_vel + 20)
+        
+        if emotion_cat == 'happy':
+            eighth = ticks_per_step / 4
+            # 1: Kick+Hat
+            drums_track.append(Message('note_on', channel=9, note=36, velocity=drum_vel, time=0))
+            drums_track.append(Message('note_on', channel=9, note=42, velocity=max(10, drum_vel-20), time=0))
+            drums_track.append(Message('note_off', channel=9, note=36, velocity=0, time=int(eighth)))
+            drums_track.append(Message('note_off', channel=9, note=42, velocity=0, time=0))
+            # 2: Hat
+            drums_track.append(Message('note_on', channel=9, note=42, velocity=max(10, drum_vel-20), time=0))
+            drums_track.append(Message('note_off', channel=9, note=42, velocity=0, time=int(eighth)))
+            # 3: Snare+Hat
+            drums_track.append(Message('note_on', channel=9, note=38, velocity=drum_vel, time=0))
+            drums_track.append(Message('note_on', channel=9, note=42, velocity=max(10, drum_vel-20), time=0))
+            drums_track.append(Message('note_off', channel=9, note=38, velocity=0, time=int(eighth)))
+            drums_track.append(Message('note_off', channel=9, note=42, velocity=0, time=0))
+            # 4: Hat
+            drums_track.append(Message('note_on', channel=9, note=42, velocity=max(10, drum_vel-20), time=0))
+            drums_track.append(Message('note_off', channel=9, note=42, velocity=0, time=int(eighth)))
+            
+        elif emotion_cat == 'fear':
+            sixteenth = ticks_per_step / 8
+            for i in range(8):
+                v_hat = max(20, drum_vel - 30 + random.randint(-10, 10))
+                drums_track.append(Message('note_on', channel=9, note=42, velocity=v_hat, time=0))
+                if i == 0 and random.random() < 0.3:
+                    drums_track.append(Message('note_on', channel=9, note=36, velocity=drum_vel, time=0))
+                    drums_track.append(Message('note_off', channel=9, note=36, velocity=0, time=int(sixteenth)))
+                    drums_track.append(Message('note_off', channel=9, note=42, velocity=0, time=0))
+                else:
+                    drums_track.append(Message('note_off', channel=9, note=42, velocity=0, time=int(sixteenth)))
+                    
+        elif emotion_cat == 'sad':
+            # Dramatic Orchestral Accent on downbeats
+            if is_new_chord and random.random() < 0.4:
+                drums_track.append(Message('note_on', channel=9, note=36, velocity=drum_vel+10, time=0))
+                drums_track.append(Message('note_on', channel=9, note=45, velocity=drum_vel, time=0))
+                drums_track.append(Message('note_on', channel=9, note=49, velocity=max(40, drum_vel-10), time=0))
+                drums_track.append(Message('note_off', channel=9, note=36, velocity=0, time=int(ticks_per_step)))
+                drums_track.append(Message('note_off', channel=9, note=45, velocity=0, time=0))
+                drums_track.append(Message('note_off', channel=9, note=49, velocity=0, time=0))
+            else:
+                drums_track.append(Message('note_off', channel=9, note=36, velocity=0, time=int(ticks_per_step)))
+                
+        elif emotion_cat == 'neutral':
+            half = ticks_per_step / 2
+            if is_new_chord:
+                drums_track.append(Message('note_on', channel=9, note=35, velocity=max(30, drum_vel-10), time=0))
+                drums_track.append(Message('note_off', channel=9, note=35, velocity=0, time=int(half)))
+            else:
+                drums_track.append(Message('note_off', channel=9, note=35, velocity=0, time=int(half)))
+                
+            drums_track.append(Message('note_on', channel=9, note=51, velocity=max(20, drum_vel-30), time=0))
+            drums_track.append(Message('note_off', channel=9, note=51, velocity=0, time=int(half)))
 
     mid.save(filename)
-    print(f"🎵 Saved Final Cohesive MIDI: {filename}")
+    print(f"🎵 Saved Final Orchestrated MIDI: {filename}")

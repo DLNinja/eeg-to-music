@@ -55,8 +55,8 @@ class ClassificationWorker(QObject):
             try: self._queue.get_nowait()
             except: break
     
-    def enqueue(self, segment):
-        self._queue.put(("segment", segment.copy()))
+    def enqueue(self, segment, timestamp):
+        self._queue.put(("segment", (segment.copy(), timestamp)))
     
     def finish(self):
         """Signal that no more segments will be added. Worker will drain then emit all_done."""
@@ -77,9 +77,10 @@ class ClassificationWorker(QObject):
                 self.all_done.emit()
                 break
             elif tag == "segment":
-                self._process(data)
+                segment, timestamp = data
+                self._process(segment, timestamp)
     
-    def _process(self, segment):
+    def _process(self, segment, timestamp):
         filtered, self.filter_zi = filter_segment(segment, self.sos, self.filter_zi)
         features = extract_single_window_features(filtered, self.stft_n, self.sf)
         self.raw_features.append(features)
@@ -99,7 +100,7 @@ class ClassificationWorker(QObject):
         else:
             probs = np.array([0.25, 0.25, 0.25, 0.25])
         
-        self.result_ready.emit(features, probs)
+        self.result_ready.emit(features, (probs, timestamp))
 
 
 # ──────────────────────────────────────────────────────
@@ -488,11 +489,12 @@ class RealTimeView(QWidget):
     
     # ── Worker callbacks (main thread) ───────────────────
     
-    def _on_classification_result(self, features, probs):
+    def _on_classification_result(self, features, result_data):
+        probs, timestamp = result_data
         self.emotion_probs.append(probs)
         
-        # Send to synthesizer
-        self.synth.update_emotion(probs, features)
+        # Send to synthesizer with the original EEG timestamp
+        self.synth.update_emotion(probs, features, timestamp)
         
         n_segs = len(self.emotion_probs)
         
@@ -652,7 +654,7 @@ class RealTimeView(QWidget):
             
             if remaining > 0:
                 self.status_label.setText(
-                    f"⏳ EEG done. Classifying remaining {remaining} segments..."
+                    f"EEG done. Classifying remaining {remaining} segments..."
                 )
                 self.play_btn.setEnabled(False)
                 self.pause_btn.setEnabled(False)
@@ -685,7 +687,9 @@ class RealTimeView(QWidget):
             remaining -= take
             
             if self.buffer_pos >= self.window_samples:
-                self.worker.enqueue(self.sample_buffer)
+                # Segment represents [playhead_idx - window_samples, playhead_idx]
+                seg_timestamp = (self.playhead_idx - self.window_samples) / self.sf
+                self.worker.enqueue(self.sample_buffer, seg_timestamp)
                 self.buffer_pos = 0
         
         # Update EEG plot with selected channels — show last 5 seconds
