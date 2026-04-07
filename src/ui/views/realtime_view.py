@@ -28,7 +28,7 @@ from src.music.realtime_generator import RealTimeMusicSynthesizer
 
 class ClassificationWorker(QObject):
     """Runs filter → features → smooth → classify in a background thread."""
-    result_ready = pyqtSignal(object, object)  # (features_62x5, probs_4)
+    result_ready = pyqtSignal(object, object, float)  # (features_62x5, probs_4, timestamp)
     all_done = pyqtSignal()  # emitted when queue is drained after finish signal
     
     def __init__(self, sos, zi_template, model, stft_n, sample_rate):
@@ -55,8 +55,8 @@ class ClassificationWorker(QObject):
             try: self._queue.get_nowait()
             except: break
     
-    def enqueue(self, segment):
-        self._queue.put(("segment", segment.copy()))
+    def enqueue(self, segment, timestamp):
+        self._queue.put(("segment", (segment.copy(), timestamp)))
     
     def finish(self):
         """Signal that no more segments will be added. Worker will drain then emit all_done."""
@@ -77,9 +77,10 @@ class ClassificationWorker(QObject):
                 self.all_done.emit()
                 break
             elif tag == "segment":
-                self._process(data)
+                seg_data, ts = data
+                self._process(seg_data, ts)
     
-    def _process(self, segment):
+    def _process(self, segment, timestamp):
         filtered, self.filter_zi = filter_segment(segment, self.sos, self.filter_zi)
         features = extract_single_window_features(filtered, self.stft_n, self.sf)
         self.raw_features.append(features)
@@ -99,7 +100,7 @@ class ClassificationWorker(QObject):
         else:
             probs = np.array([0.25, 0.25, 0.25, 0.25])
         
-        self.result_ready.emit(features, probs)
+        self.result_ready.emit(features, probs, timestamp)
 
 
 # ──────────────────────────────────────────────────────
@@ -488,11 +489,11 @@ class RealTimeView(QWidget):
     
     # ── Worker callbacks (main thread) ───────────────────
     
-    def _on_classification_result(self, features, probs):
+    def _on_classification_result(self, features, probs, timestamp):
         self.emotion_probs.append(probs)
         
         # Send to synthesizer
-        self.synth.update_emotion(probs, features)
+        self.synth.update_emotion(probs, features, timestamp)
         
         n_segs = len(self.emotion_probs)
         
@@ -685,7 +686,9 @@ class RealTimeView(QWidget):
             remaining -= take
             
             if self.buffer_pos >= self.window_samples:
-                self.worker.enqueue(self.sample_buffer)
+                # Use current wall clock relative to playback start for synth-to-UI sync
+                seg_timestamp = (self.playhead_idx - self.window_samples) / self.sf
+                self.worker.enqueue(self.sample_buffer, seg_timestamp)
                 self.buffer_pos = 0
         
         # Update EEG plot with selected channels — show last 5 seconds

@@ -44,7 +44,11 @@ class RealTimeMusicSynthesizer(QThread):
         self.current_bpm = 100
         self.prev_dominant_idx = -1
         self.emotion_streak = 0
-        self.melody_idx = 21
+        # Melody state
+        self.melody_idx = 35
+        self.prev_melody_intervals = [0, 0, 0]
+        self.force_snap = False
+        self.dynamic_key_set = (base_key_offset != 0)
         self.fundamental_bass_root = 36 + self.base_key_offset
         
         # Active notes to turn off cleanly
@@ -69,17 +73,32 @@ class RealTimeMusicSynthesizer(QThread):
     def _init_synth(self):
         try:
             with SuppressStderr():
+                # On Windows, 'dsound' or 'waveout' are most reliable. 
+                # On Linux, 'pulseaudio' or 'alsa'.
                 self.synth = fluidsynth.Synth()
+                
+                # FluidSynth settings to prevent trying to open MIDI INPUT devices
+                # which causes the "Expected:1 found:0" error on many systems.
+                self.synth.setting('midi.driver', 'none') 
+                
                 if os.name == "nt":
-                    try:
-                        self.synth.start(driver="waveout")
-                    except:
-                        self.synth.start()
+                    # For Windows, try dsound then waveout
+                    drivers = ["dsound", "waveout", "winmidi"]
                 else:
+                    drivers = ["pulseaudio", "alsa", "jack"]
+
+                success = False
+                for driver in drivers:
                     try:
-                        self.synth.start(driver="pulseaudio")
+                        self.synth.start(driver=driver)
+                        success = True
+                        break
                     except:
-                        self.synth.start()
+                        continue
+                
+                if not success:
+                    # Final attempt with default start
+                    self.synth.start()
                 
                 soundfonts = ["models/soundfont.sf2", "soundfont.sf2", "MuseScore_General.sf3"]
                 sfid = -1
@@ -92,9 +111,9 @@ class RealTimeMusicSynthesizer(QThread):
                     self.synth.program_select(0, sfid, 0, 0)
                     self.synth.program_select(1, sfid, 0, 0)
                 else:
-                    print("Warning: RealTimeSynth - No soundfont found.")
+                    print("[RealTimeSynth] Warning: No soundfont found.")
         except Exception as e:
-            print(f"Warning: RealTimeSynth - Failed to initialize FluidSynth: {e}")
+            print(f"[RealTimeSynth] Error: Failed to initialize FluidSynth: {e}")
             self.synth = None
 
     def update_emotion(self, probs, features, timestamp):
@@ -220,11 +239,29 @@ class RealTimeMusicSynthesizer(QThread):
 
         # ── 1. Pull both Macro (slow mood) and Micro (instantaneous delta) states ──
         state = self.tracker.get_state()
-        macro_v = state['macro_v']   # Slow valence — drives scale colour & harmony
-        macro_a = state['macro_a']   # Slow arousal — drives base tempo & energy level
-        micro_v = state['micro_v']   # Instantaneous valence swing
-        micro_a = state['micro_a']   # Instantaneous arousal spike
+        macro_v = state['macro_v']   
+        macro_a = state['macro_a']   
+        micro_v = state['micro_v']   
+        micro_a = state['micro_a']   
         is_spike = state['is_spike']
+
+        # ── Dynamic Key Selection (Schubert) ──
+        if not self.dynamic_key_set:
+            self.dynamic_key_set = True
+            dom_idx = int(np.argmax(p))
+            # 0=Neutral, 1=Sad, 2=Fear, 3=Happy
+            EMOTION_LABELS = ["Neutral", "Sad", "Fear", "Happy"]
+            if dom_idx == 3: # Happy -> C Maj (0) or G Maj (7)
+                self.base_key_offset = random.choice([0, 7])
+            elif dom_idx == 1: # Sad -> D Min (2) or F Min (5)
+                self.base_key_offset = random.choice([2, 5])
+            elif dom_idx == 2: # Fear -> C# Min (1) or Eb Min (3)
+                self.base_key_offset = random.choice([1, 3])
+            else: # Neutral -> F Maj (5) or A Min (9)
+                self.base_key_offset = random.choice([5, 9])
+            
+            self.fundamental_bass_root = 36 + self.base_key_offset
+            print(f"[Synthesizer] Dynamic Key Set! Emotion: {EMOTION_LABELS[dom_idx]}, Offset: +{self.base_key_offset}")
 
         # Track emotion streak for chord-change logic
         dominant_idx = int(np.argmax(p))
@@ -232,6 +269,16 @@ class RealTimeMusicSynthesizer(QThread):
             self.emotion_streak += 1
         else:
             self.emotion_streak = 0
+            # NEW LOGIC: Clear interval buffer and force a melodic anchor on emotion shift
+            self.prev_melody_intervals = [0, 0, 0]
+            self.force_snap = True
+            
+        if is_spike:
+            # Spikes also reset momentum to prevent wildly dissonant leaps 
+            # from mismatched state matrices.
+            self.prev_melody_intervals = [0, 0, 0]
+            self.force_snap = True
+            
         self.prev_dominant_idx = dominant_idx
 
         # ── 2. Mode & Chord Quality (driven entirely by MACRO valence) ──
@@ -390,16 +437,21 @@ class RealTimeMusicSynthesizer(QThread):
                 chord_adherence_prob = 0.7 + (macro_v * 0.2) + (micro_v * 0.1)
                 chord_adherence_prob = max(0.4, min(0.95, chord_adherence_prob))
 
-                if random.random() < chord_adherence_prob:
+                if self.force_snap or random.random() < chord_adherence_prob:
+                    # Ground the melody back to the current safe chord tones
                     target_note = random.choice(chord_notes) + random.choice([12, 24])
                     note = int(target_note)
                     try:
                         self.melody_idx = min(range(len(pool)), key=lambda k: abs(pool[k] - note))
                     except Exception:
                         pass
+                    
+                    if self.force_snap:
+                        self.force_snap = False
                 else:
-                    step = self.markov_engine.query_next_interval(emotion_cat, self.prev_melody_interval)
-                    self.prev_melody_interval = step
+                    step = self.markov_engine.query_next_interval(emotion_cat, self.prev_melody_intervals)
+                    self.prev_melody_intervals.pop(0)
+                    self.prev_melody_intervals.append(step)
                     self.melody_idx += step
                     self.melody_idx = max(21, min(len(pool)-1, self.melody_idx))
                     note = int(pool[self.melody_idx])
@@ -410,6 +462,11 @@ class RealTimeMusicSynthesizer(QThread):
                     note += 12  # Sudden brightness / elation
                 if micro_v < -0.4 and random.random() < 0.35:
                     note += random.choice([-1, 1])  # Sudden tension / unease
+
+
+                # Cap super high notes to prevent whistle notes (C6 is 84)
+                while note > 84:
+                    note -= 12
 
                 is_rest = (abs(macro_v) < 0.2 and abs(macro_a) < 0.2
                            and random.random() < 0.3)

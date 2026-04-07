@@ -203,8 +203,10 @@ def extract_transitions():
     # Initialise transition counters
     quadrant_transitions = {
         q: {
-            'pitch_interval': defaultdict(lambda: defaultdict(int)),  # prev_interval → next_interval
-            'duration':       defaultdict(lambda: defaultdict(int)),  # prev_dur_bin → next_dur_bin
+            'pitch_interval_1': defaultdict(lambda: defaultdict(int)),  # 1st order
+            'pitch_interval_2': defaultdict(lambda: defaultdict(int)),  # 2nd order
+            'pitch_interval_3': defaultdict(lambda: defaultdict(int)),  # 3rd order
+            'duration':         defaultdict(lambda: defaultdict(int)),
         }
         for q in ['happy', 'sad', 'fear', 'neutral']
     }
@@ -261,21 +263,33 @@ def extract_transitions():
 
             stats['windows_counted'] += 1
 
+            # Maintain a sliding window of last 3 intervals (initialized to 0)
+            prev_intervals = [0, 0, 0]
+
             # Record note-to-note transitions within this window
             for i in range(len(window_notes) - 1):
                 _, p1, d1 = window_notes[i]
                 _, p2, d2 = window_notes[i + 1]
 
-                interval_curr = 0 if i == 0 else (p1 - window_notes[i-1][1])
                 interval_next = p2 - p1
+
+                state1 = str(prev_intervals[-1])
+                state2 = f"{prev_intervals[-2]},{prev_intervals[-1]}"
+                state3 = f"{prev_intervals[-3]},{prev_intervals[-2]},{prev_intervals[-1]}"
 
                 dur_bin_curr = bin_duration(d1)
                 dur_bin_next = bin_duration(d2)
 
                 q_data = quadrant_transitions[quadrant]
-                q_data['pitch_interval'][str(interval_curr)][str(interval_next)] += 1
+                q_data['pitch_interval_1'][state1][str(interval_next)] += 1
+                q_data['pitch_interval_2'][state2][str(interval_next)] += 1
+                q_data['pitch_interval_3'][state3][str(interval_next)] += 1
                 q_data['duration'][dur_bin_curr][dur_bin_next] += 1
                 stats['notes_counted'] += 1
+                
+                # Update history
+                prev_intervals.pop(0)
+                prev_intervals.append(interval_next)
 
     return quadrant_transitions, quadrant_flow, stats
 
@@ -312,17 +326,19 @@ def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     for q in ['happy', 'sad', 'fear', 'neutral']:
         output = {
-            'pitch_interval': normalise(quadrant_transitions[q]['pitch_interval']),
-            'duration':       normalise(quadrant_transitions[q]['duration']),
+            'pitch_interval_1': normalise(quadrant_transitions[q]['pitch_interval_1']),
+            'pitch_interval_2': normalise(quadrant_transitions[q]['pitch_interval_2']),
+            'pitch_interval_3': normalise(quadrant_transitions[q]['pitch_interval_3']),
+            'duration':         normalise(quadrant_transitions[q]['duration']),
         }
 
         out_file = os.path.join(OUTPUT_DIR, f'transitions_{q}.json')
         with open(out_file, 'w') as f:
             json.dump(output, f, indent=2)
         
-        n_pitch_states = len(output['pitch_interval'])
+        n_pitch_states = len(output['pitch_interval_1'])
         n_dur_states   = len(output['duration'])
-        print(f"  {q:8s}: {n_pitch_states:3d} pitch states, {n_dur_states:3d} duration states → {out_file}")
+        print(f"  {q:8s}: {n_pitch_states:3d} 1st-order pitch states, {n_dur_states:3d} duration states → {out_file}")
 
     # Save quadrant flow matrix (emotion transition probabilities)
     flow_output = normalise(quadrant_flow)

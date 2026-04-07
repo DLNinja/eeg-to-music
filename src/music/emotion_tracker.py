@@ -3,22 +3,20 @@ import numpy as np
 
 class EmotionTracker:
     """
-    Tracks continuous Valence-Arousal (V-A) state and identifies dynamics 
-    such as long-term mood (Macro) and short-term response (Micro Spikes).
+    Tracks continuous Valence-Arousal (V-A) values
+    and identifies long-term mood (MACRO) and short-term response (MICRO SPIKES).
     """
     def __init__(self, window_size=10, spike_threshold=0.3):
-        # Current instantaneous state
+        # CURRENT STATE
         self.v = 0.0
         self.a = 0.0
         
-        # History for Rolling Average (Macro Mood)
-        # Assuming 1-second update chunks, maxlen=10 is a 10-second window
-        self.history = deque(maxlen=window_size)
-        
+        # HISTORY FOR ROLLING AVERAGE (MACRO MOOD)
+        self.history = deque(maxlen=window_size) # knows the last 10 states
         self.spike_threshold = spike_threshold
         
-        # Backward compatibility mapping for discrete EEG labels
-        # 3: Happy, 1: Sad, 2: Fear, 0: Neutral
+        # BACKWARD COMPATIBILITY: EMOTIONS -> V-A SPACE
+        # 3: HAPPY, 1: SAD, 2: FEAR, 0: NEUTRAL
         self.LABEL_TO_VA = {
             3: (0.8, 0.8),   # Top-Right: High V, High A
             1: (-0.8, -0.8), # Bottom-Left: Low V, Low A
@@ -28,7 +26,7 @@ class EmotionTracker:
 
     def update_from_discrete(self, label_idx, confidence=1.0):
         """
-        Adapts the existing discrete classifier output into the V-A space.
+        Adapts the existing emotion classifier output into the V-A space.
         Weighting by confidence allows for more fluid movement between quadrants.
         """
         target_v, target_a = self.LABEL_TO_VA.get(label_idx, (0.0, 0.0))

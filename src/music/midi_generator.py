@@ -7,7 +7,7 @@ from .emotion_tracker import EmotionTracker
 from .markov_engine import MarkovEngine
 
 def get_mode_intervals(mode_name):
-    # Greek Mode interval integer scales relative to the Root
+    # GREEK MODES (intervals relative to the root)
     modes = {
         'lydian':     [0, 2, 4, 6, 7, 9, 11],
         'ionian':     [0, 2, 4, 5, 7, 9, 11],
@@ -20,7 +20,7 @@ def get_mode_intervals(mode_name):
     return modes.get(mode_name, modes['ionian'])
 
 def get_mode_pool(mode_name, root_midi=24, octaves=8):
-    # generates parallel mode notes across octaves grounded to a shared root fundamental
+    # GENERATES THE POOL OF VALID NOTES BASED ON MODE AND ROOT (the key of the song)
     intervals = get_mode_intervals(mode_name)
     pool = []
     for oct in range(octaves):
@@ -37,33 +37,33 @@ def get_chord(mode_name, root_midi, chord_type="triad"):
     elif chord_type == "sus2":
         return [root_midi, root_midi + intervals[1], root_midi + intervals[4]]
     elif chord_type == "dim":
-        # Force a flat 5 for horror/fear
         return [root_midi, root_midi + intervals[2], root_midi + 6]
     return [root_midi, root_midi + intervals[2], root_midi + intervals[4]]
 
 def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offset=0, filename="eeg_music.mid"):
     mid = MidiFile()
 
-    # left hand chords + right hand melody
+    # left hand CHORDS + right hand MELODY
     chord_track = MidiTrack()
     melody_track = MidiTrack()
     mid.tracks.extend([chord_track, melody_track])
     
-    # Explicitly set the instrument to Acoustic Grand Piano (Program 0) for both tracks
+    # Instrument = Acoustic Grand Piano (Program 0)
     chord_track.append(Message('program_change', program=0, time=0))
     melody_track.append(Message('program_change', program=0, time=0))
 
     ticks_per_beat = 480
     ticks_per_step = ticks_per_beat * 2 # each time step holds for 2 beats
 
-    # Rhythm dicts: lists of note durations in ticks adding up to ticks_per_step (960)
+    # RHYTHM DICTIONARY:
+    # lists of note durations in ticks adding up to ticks_per_step (960)
     rhythms = {
         'slow': [[960], [480, 480], [720, 240]],
         'med': [[480, 240, 240], [240, 240, 480], [320, 320, 320]], # triplets included
         'fast': [[240, 240, 240, 240], [120, 120, 240, 480], [240, 120, 120, 480]]
     }
 
-    # Tracking variables for Cohesion and Phrasing
+    # TRACKING VARIABLES (Cohesion and Phrasing)
     current_bpm = None
     prev_dominant_idx = -1
     emotion_streak = 0
@@ -78,7 +78,7 @@ def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offs
     tracker = EmotionTracker(window_size=10, spike_threshold=0.3)
     markov_engine = MarkovEngine()
 
-    # Step 3: Motif memory — stores the last generated 3-4 note contour phrase
+    # MOTIF MEMORY (stores the last generated 3-4 note contour phrase)
     motif_buffer = []  # list of scale-degree offsets relative to melody_idx
 
     progression_step = 0
@@ -366,6 +366,11 @@ def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offs
                 new_deg = melody_idx + deg_offset + shift
                 new_deg = max(21, min(len(active_pool) - 1, new_deg))
                 note    = int(active_pool[new_deg]) + register_shift
+                
+                # Cap super high notes to prevent whistle notes (C6 is 84)
+                while note > 84:
+                    note -= 12
+                    
                 note    = max(0, min(127, note))
                 melody_notes_and_durations.append((note, duration))
         else:
@@ -374,12 +379,13 @@ def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offs
             # for the current emotion quadrant to build a dynamically realistic phrase.
             
             chosen_contour = []
-            prev_interval = 0  # start stationary
+            prev_intervals = [0, 0, 0]  # start stationary with history
             
             for _ in range(len(chosen_rhythm)):
-                next_interval = markov_engine.query_next_interval(emotion_cat, prev_interval)
+                next_interval = markov_engine.query_next_interval(emotion_cat, prev_intervals)
                 chosen_contour.append(next_interval)
-                prev_interval = next_interval
+                prev_intervals.pop(0)
+                prev_intervals.append(next_interval)
                 
             new_motif = []
 
@@ -404,6 +410,11 @@ def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offs
                     note += 12
                 if state['micro_v'] < -0.4 and random.random() < 0.35:
                     note += random.choice([-1, 1])
+
+                # Cap super high notes to prevent whistle notes (C6 is 84)
+                while note > 84:
+                    note -= 12
+
                 note = max(0, min(127, note))
 
                 # Record motif as degree offset from the START melody_idx of this phrase
