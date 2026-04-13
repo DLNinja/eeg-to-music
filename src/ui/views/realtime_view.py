@@ -493,7 +493,7 @@ class RealTimeView(QWidget):
         self.emotion_probs.append(probs)
         
         # Send to synthesizer
-        self.synth.update_emotion(probs, features, timestamp)
+        self.synth.update_emotion(probs, timestamp)
         
         n_segs = len(self.emotion_probs)
         

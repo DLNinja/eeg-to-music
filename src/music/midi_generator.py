@@ -6,6 +6,52 @@ import numpy as np
 from .emotion_tracker import EmotionTracker
 from .markov_engine import MarkovEngine
 
+# ── CHORD TRANSITION MATRIX (Markov Chain on Relative Scale Degrees) ──
+# Maps current chord degree (0-6) to weighted next-degree options per emotion.
+# Shared across both offline (midi_generator) and live (realtime_generator).
+CHORD_TRANSITIONS = {
+    'happy': {
+        # Lydian/Ionian: Wants to move to IV (3) and V (4), strong resolutions to I (0)
+        0: {'options': [0, 1, 3, 4, 5], 'weights': [10, 10, 30, 30, 20]},
+        1: {'options': [4, 5, 0],       'weights': [60, 20, 20]},
+        2: {'options': [3, 5],          'weights': [50, 50]},
+        3: {'options': [0, 4, 1],       'weights': [40, 40, 20]},
+        4: {'options': [0, 5],          'weights': [70, 30]},
+        5: {'options': [3, 1, 0],       'weights': [50, 30, 20]},
+        6: {'options': [0, 5],          'weights': [80, 20]}
+    },
+    'sad': {
+        # Aeolian: Heavy reliance on walking down (i -> VII -> VI -> v)
+        0: {'options': [0, 3, 5, 6],    'weights': [20, 20, 30, 30]},
+        1: {'options': [4, 6],          'weights': [70, 30]},
+        2: {'options': [5, 3],          'weights': [60, 40]},
+        3: {'options': [0, 4, 6],       'weights': [40, 40, 20]},
+        4: {'options': [0, 5],          'weights': [60, 40]},
+        5: {'options': [3, 6, 0],       'weights': [40, 40, 20]},
+        6: {'options': [0, 2, 5],       'weights': [50, 20, 30]}
+    },
+    'fear': {
+        # Phrygian/Locrian: Tense, droning on the root, anxious half-steps to the flat 2nd (II)
+        0: {'options': [0, 1, 2],       'weights': [70, 20, 10]},
+        1: {'options': [0, 2],          'weights': [80, 20]},
+        2: {'options': [0, 1],          'weights': [50, 50]},
+        3: {'options': [0, 4],          'weights': [80, 20]},
+        4: {'options': [0, 1],          'weights': [80, 20]},
+        5: {'options': [0, 6],          'weights': [70, 30]},
+        6: {'options': [0],             'weights': [100]}
+    },
+    'neutral': {
+        # Dorian/Mixolydian: Wandering jazz/pop turnarounds, avoiding aggressive resolutions
+        0: {'options': [0, 1, 3, 4],    'weights': [20, 30, 30, 20]},
+        1: {'options': [0, 3, 4],       'weights': [20, 40, 40]},
+        2: {'options': [1, 5],          'weights': [50, 50]},
+        3: {'options': [0, 1, 4],       'weights': [40, 30, 30]},
+        4: {'options': [0, 1, 3],       'weights': [30, 30, 40]},
+        5: {'options': [1, 3],          'weights': [50, 50]},
+        6: {'options': [0, 3],          'weights': [50, 50]}
+    }
+}
+
 def get_mode_intervals(mode_name):
     # GREEK MODES (intervals relative to the root)
     modes = {
@@ -40,7 +86,7 @@ def get_chord(mode_name, root_midi, chord_type="triad"):
         return [root_midi, root_midi + intervals[2], root_midi + 6]
     return [root_midi, root_midi + intervals[2], root_midi + intervals[4]]
 
-def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offset=0, filename="eeg_music.mid"):
+def generate_midi_from_emotions(emotions_array, base_key_offset=0, filename="eeg_music.mid"):
     mid = MidiFile()
 
     # left hand CHORDS + right hand MELODY
@@ -68,23 +114,37 @@ def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offs
     prev_dominant_idx = -1
     emotion_streak = 0
     
-    # Start the melody index around middle C.
-    # index 21 in the 8-octave pool is exactly the Root interval of the 3rd octave
+    # starting index 21 = root interval of the 3rd octave
     melody_idx = 21 
 
-    # Shared Root note across all modes for parallel cohesion (24 is C1, 36 is C2, 48 is C3)
-    fundamental_bass_root = 36 + base_key_offset
+    # ── Dynamic Key Selection (Schubert) ──
+    if base_key_offset == 0 and len(emotions_array) > 0:
+        dom_idx = int(np.argmax(emotions_array[0]))
+        # 0=Neutral, 1=Sad, 2=Fear, 3=Happy
+        EMOTION_LABELS = ["Neutral", "Sad", "Fear", "Happy"]
+        if dom_idx == 3: # Happy -> C Maj (0) or G Maj (7)
+            base_key_offset = random.choice([0, 7])
+        elif dom_idx == 1: # Sad -> D Min (2) or F Min (5)
+            base_key_offset = random.choice([2, 5])
+        elif dom_idx == 2: # Fear -> C# Min (1) or Eb Min (3)
+            base_key_offset = random.choice([1, 3])
+        else: # Neutral -> F Maj (5) or A Min (9)
+            base_key_offset = random.choice([5, 9])
+        print(f"[OfflineGenerator] Dynamic Key Set! Emotion: {EMOTION_LABELS[dom_idx]}, Offset: +{base_key_offset}")
+
+    # shared root note across all modes for parallel cohesion 
+    fundamental_bass_root = 36 + base_key_offset # (24 = C1, 36 = C2, 48 = C3)
     
     tracker = EmotionTracker(window_size=10, spike_threshold=0.3)
     markov_engine = MarkovEngine()
 
-    # MOTIF MEMORY (stores the last generated 3-4 note contour phrase)
+    # MOTIF MEMORY (stores the last generated 3-4 note pattern)
     motif_buffer = []  # list of scale-degree offsets relative to melody_idx
 
-    progression_step = 0
+    current_chord_degree = 0
 
     for t, p in enumerate(emotions_array):
-        # Update continuous tracker
+        # Update emotion tracker
         dominant_idx = np.argmax(p)
         intensity = p[dominant_idx]
         tracker.update_from_discrete(dominant_idx, intensity)
@@ -93,7 +153,7 @@ def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offs
         v = state['macro_v']
         a = state['macro_a']
         
-        # Track streak to implement variations within identical sustained emotion periods
+        # Track MACRO MOOD streak to implement variations
         if dominant_idx == prev_dominant_idx:
             emotion_streak += 1
         else:
@@ -102,18 +162,18 @@ def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offs
 
         # --------------------------------------------------------------------------
         # 1. MODE SELECTION
-        # Valence determines the "color" (Scale)
+        # VALENCE determines the "color" of the music (scale)
         is_neutral = abs(v) < 0.2 and abs(a) < 0.2
 
         if is_neutral:
-            # ── Step 1: Chameleon Neutral ─────────────────────────────────────
-            # Use the nearest expressive mode so neutral doesn't pick a random
-            # colour each bar — it "leans" toward whichever quadrant is closest.
+            # _________________"CHAMELEON" NEUTRAL_________________ 
+            # Use the nearest mode so neutral doesn't pick a random
+            # color each bar — it "leans" toward whichever quadrant is closest.
             if v >= 0:
-                current_mode = 'mixolydian'   # Slightly bright but ambiguous
+                current_mode = 'mixolydian'   # BRIGHT NEUTRAL
             else:
-                current_mode = 'dorian'        # Slightly dark but smooth
-            # Suspended chords = tonally ambiguous, works for any mood
+                current_mode = 'dorian'        # DARK NEUTRAL
+            # Sus chords = tonally ambiguous, they work for any mood
             chord_type = random.choice(['sus2', 'sus4'])
         elif v > 0.5:
             current_mode = 'lydian' if v > 0.75 else 'ionian'
@@ -131,13 +191,13 @@ def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offs
             current_mode = 'phrygian' if v > -0.8 else 'locrian'
             chord_type = "dim"
 
-        # Generate the pool of valid diatonic notes for this exact parallel mode
+        # Generate the pool of valid notes for the selected mode
         pool = get_mode_pool(current_mode, root_midi=(24 + base_key_offset), octaves=8)
 
-        # ── Step 1 (cont.): Neutral pentatonic restriction & register shift ──
+        # ── Neutral pentatonic restriction & register shift ──
         if is_neutral:
-            # Build a pentatonic subset: degrees 0, 1, 3, 4, 5 of the diatonic pool
-            # (skips the 3rd and 7th — removes modal "colour" notes for ambiguity)
+            # Use degrees 0, 1, 3, 4, 5 of the diatonic pool
+            # (skip the 3rd and 7th — remove modal "color" notes for ambiguity)
             pentatonic_degrees = [0, 1, 3, 4, 5]
             pentatonic_pool = []
             intervals = get_mode_intervals(current_mode)
@@ -148,58 +208,20 @@ def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offs
                     if note <= 127:
                         pentatonic_pool.append(note)
             melody_pool = pentatonic_pool  # melody uses this restricted pool
-            # Register shift: slightly negative V → drop one octave (dark ambient)
-            #                 slightly positive V → raise one octave (serene)
+            # Neutral Register Shift: 
+            # negative V → drop one octave (dark ambient)
+            # positive V → raise one octave (serene)
             register_shift = 12 if v > 0.05 else (-12 if v < -0.05 else 0)
         else:
             melody_pool = pool
             register_shift = 0
         
-        # 1.5. TEXTURING: Map raw EEG bands to MIDI Control Change (CC) messages
-        if eeg_features is not None and t < len(eeg_features):
-            # eeg_features shape: (T, 62, 5) -> 5 bands: Delta, Theta, Alpha, Beta, Gamma
-            # Average across all channels for this time step to get global brain state
-            bands = np.mean(eeg_features[t], axis=0) # shape (5,)
-            
-            # Normalize bands roughly to 0-127 MIDI range. 
-            # DE features are typically between -10 and 20 (log energy). 
-            # We'll use a simple min-max scaling assumption or clipping for safety.
-            # You can tweak these multiplier/offset values depending on the actual data range!
-            scaled_bands = np.clip((bands + 5) * 6, 0, 127).astype(int) 
-            
-            delta_val = scaled_bands[0]
-            theta_val = scaled_bands[1]
-            alpha_val = scaled_bands[2]
-            beta_val  = scaled_bands[3]
-            gamma_val = scaled_bands[4]
-            
-            # Texture 1: Delta -> Chorus/Sub-bass (CC 93)
-            chord_track.append(Message('control_change', control=93, value=delta_val, time=0))
-            melody_track.append(Message('control_change', control=93, value=delta_val, time=0))
-            
-            # Texture 2: Theta -> Modulation Wheel (CC 1)
-            chord_track.append(Message('control_change', control=1, value=theta_val, time=0))
-            melody_track.append(Message('control_change', control=1, value=theta_val, time=0))
-            
-            # Texture 3: Alpha -> Reverb (CC 91)
-            chord_track.append(Message('control_change', control=91, value=alpha_val, time=0))
-            melody_track.append(Message('control_change', control=91, value=alpha_val, time=0))
-            
-            # Texture 4: Beta -> Envelope Attack (CC 73)
-            # Higher Beta (alert) = faster attack (lower CC value). Low Beta = slow attack (higher CC value)
-            attack_val = 127 - beta_val
-            chord_track.append(Message('control_change', control=73, value=attack_val, time=0))
-            melody_track.append(Message('control_change', control=73, value=attack_val, time=0))
-            
-            # Texture 5: Gamma -> Brightness/Filter Cutoff (CC 74)
-            chord_track.append(Message('control_change', control=74, value=gamma_val, time=0))
-            melody_track.append(Message('control_change', control=74, value=gamma_val, time=0))
-            
+        # --------------------------------------------------------------------------
         # 2. DYNAMICS & TEMPO (Mapped to Arousal)
         # BPM scale: -1.0 (60) to 1.0 (140)
         target_bpm = 100 + (a * 40)
         
-        # Exponential Moving Average for smooth cinematic tempo transitions
+        # EXPONENTIAL MOVING AVERAGE (for smooth tempo transitions)
         if current_bpm is None:
             current_bpm = target_bpm
         else:
@@ -213,11 +235,11 @@ def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offs
         # ticks_per_step = (current_bpm / 60) * ticks_per_beat
         ticks_per_step = int((current_bpm / 60.0) * ticks_per_beat)
 
-        # Velocity mapping: -1.0 (30) to 1.0 (110)
+        # VELOCITY MAPPING: -1.0 (30) to 1.0 (110)
         velocity = int(70 + (a * 40))
         velocity = max(30, min(110, velocity))
         
-        # Rhythmic Density based on Arousal
+        # RHYTHMIC DENSITY based on Arousal
         if a > 0.6:
             chosen_rhythm_ratios = [0.25, 0.25, 0.25, 0.25] if random.random() > 0.5 else [0.125, 0.125, 0.25, 0.5]
         elif a > 0.0:
@@ -234,7 +256,7 @@ def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offs
         # -------------------------------------------------------------------------
         # 3. CHORD & ACCOMPANIMENT GENERATION (Block styles only)
 
-        # Map macro V/A to discrete emotional categories for the progression
+        # Map MACRO V/A to discrete emotional categories for the progression
         if v > 0.4 and a > 0.0:
             emotion_cat = 'happy'
         elif v < -0.3 and a < 0.0:
@@ -244,17 +266,7 @@ def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offs
         else:
             emotion_cat = 'neutral'
 
-        # --- EMOTION SPECIFIC CHORD PROGRESSIONS ---
-        PROGRESSIONS = {
-            # Happy: classic pop I-V-vi-IV (Lydian/Ionian degrees)
-            'happy':   [0, 4, 5, 3],
-            # Sad: Andalusian descending cadence i-bVII-VI-V (Aeolian degrees)
-            'sad':     [0, 6, 5, 4],
-            # Fear: mostly drones on the root, occasionally touching bII (Phrygian)
-            'fear':    [0, 0, 1, 0],
-            # Neutral: Dorian/Mixolydian shifts (II-I-IV-V)
-            'neutral': [1, 0, 3, 4],
-        }
+        # --- CHORD PROGRESSION (Markov Transition Matrix) ---
 
         # Harmonic Rhythm: How many steps to hold a chord based on Macro Arousal
         if a > 0.6:
@@ -264,17 +276,19 @@ def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offs
         else:
             harmonic_rhythm = 4
 
-        # Advance the progression sequence
+        # Advance chord via Markov dice roll
         if t == 0 or emotion_streak == 0:
-            progression_step = 0
-            # On state change, force chord change immediately
-            current_chord_degree = PROGRESSIONS[emotion_cat][progression_step]
+            # On start or emotion shift, force a safe root
+            current_chord_degree = 0
         elif emotion_streak % harmonic_rhythm == 0:
-            progression_step = (progression_step + 1) % 4
-            current_chord_degree = PROGRESSIONS[emotion_cat][progression_step]
-        else:
-            # Hold chord
-            pass
+            # Time to change the chord — look up the transition matrix
+            matrix = CHORD_TRANSITIONS.get(emotion_cat, {})
+            if current_chord_degree in matrix:
+                options = matrix[current_chord_degree]['options']
+                weights = matrix[current_chord_degree]['weights']
+                current_chord_degree = random.choices(options, weights=weights, k=1)[0]
+            else:
+                current_chord_degree = 0  # Fallback
 
         base_chord_pool_idx = 14
         chord_root_idx = base_chord_pool_idx + current_chord_degree
@@ -293,7 +307,7 @@ def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offs
 
         chord_vel = max(20, velocity - 10)
 
-        # --- ACCOMPANIMENT STYLES (NO ARPEGGIOS) ---
+        # --- ACCOMPANIMENT STYLES ---
         if emotion_cat == 'happy':
             # sustained_block: Classic block chord right on the beat
             for n in chord_notes:
@@ -346,7 +360,7 @@ def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offs
 
 
         # -------------------------------------------------------------------------
-        # 4. MELODY GENERATION (Step 3: Motif Memory)
+        # 4. MELODY GENERATION
         # 40 % of the time: replay the saved motif (transposed ±1-2 scale degrees).
         # 60 % of the time: generate a fresh contour phrase and save it.
 
@@ -389,7 +403,7 @@ def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offs
                 
             new_motif = []
 
-            # Harmonic adherence: macro valence anchors to chord, micro valence nudges
+            # Harmonic adherence: MACRO VALENCE anchors to chord, MICRO VALENCE nudges
             chord_adherence_prob = max(0.4, min(0.95, 0.7 + (v * 0.20) + (state['micro_v'] * 0.10)))
 
             for i, duration in enumerate(chosen_rhythm):
@@ -399,7 +413,10 @@ def generate_midi_from_emotions(emotions_array, eeg_features=None, base_key_offs
 
                 # Occasionally snap to a chord tone for harmonic grounding
                 if random.random() < chord_adherence_prob:
-                    target_note = random.choice(chord_notes) + random.choice([12, 24])
+                    # Snap to safe triad tones only (Root, 3rd, 5th)
+                    # to prevent dissonant clashes with any 7ths or extensions
+                    safe_snap_notes = chord_notes[:3]
+                    target_note = random.choice(safe_snap_notes) + random.choice([12, 24])
                     melody_idx  = _pool_idx_nearest(target_note, active_pool)
                     melody_idx  = max(21, min(len(active_pool) - 1, melody_idx))
 

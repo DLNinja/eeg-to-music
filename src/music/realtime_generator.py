@@ -6,12 +6,12 @@ import random
 import numpy as np
 from PyQt5.QtCore import QThread, QMutex, QMutexLocker, pyqtSignal
 
-from src.music.midi_generator import get_mode_pool, get_chord
+from src.music.midi_generator import get_mode_pool, get_chord, CHORD_TRANSITIONS
 from src.music.emotion_tracker import EmotionTracker
 from src.music.markov_engine import MarkovEngine
 
 class SuppressStderr:
-    """Context manager to suppress C-level stderr (ALSA/Jack warnings)."""
+    """Context manager to suppress C-level audio driver warnings"""
     def __enter__(self):
         self.null_fd = os.open(os.devnull, os.O_RDWR)
         self.save_fd = os.dup(2)
@@ -35,16 +35,17 @@ class RealTimeMusicSynthesizer(QThread):
         self.is_playing = False
         self.playback_start_time = 0.0
         
-        # State Queue (to receive 1-second updates from EEG worker)
+        # STATE QUEUE (to receive 1-second updates from EEG worker)
         self.update_queue = []
-        # Note Queue: list of (timestamp, channel, pitch, velocity, duration, is_note_on)
+        # NOTES QUEUE: list of (timestamp, channel, pitch, velocity, duration, is_note_on)
         self.note_queue = []
         
-        # Internal Music State
+        # INTERNAL MUSIC PARAMETERS
         self.current_bpm = 100
         self.prev_dominant_idx = -1
         self.emotion_streak = 0
-        # Melody state
+
+        # MELODY STATE
         self.melody_idx = 35
         self.prev_melody_intervals = [0, 0, 0]
         self.force_snap = False
@@ -56,9 +57,9 @@ class RealTimeMusicSynthesizer(QThread):
         self.active_melody_note = None
         self.current_chord_degree = 0      # Track which scale degree is sounding
         self.current_dominant_idx = -1     # Track which emotion type is active for the chord
-        self.progression_step = 0          # Step within the current emotion's progression
 
-        # Timing — rhythm lists match MIDI generator (proportions of a 2-beat step)
+        # RHYTHM DICTIONARY:
+        # this matches MIDI generator (proportions of a 2-beat step)
         self.rhythms = {
             'slow': [[1.0], [0.5, 0.5], [0.75, 0.25]],
             'med':  [[0.5, 0.25, 0.25], [0.25, 0.25, 0.5], [0.333, 0.333, 0.333]],
@@ -73,8 +74,8 @@ class RealTimeMusicSynthesizer(QThread):
     def _init_synth(self):
         try:
             with SuppressStderr():
-                # On Windows, 'dsound' or 'waveout' are most reliable. 
-                # On Linux, 'pulseaudio' or 'alsa'.
+                # On WINDOWS, 'dsound' or 'waveout' are most reliable. 
+                # On LINUX, 'pulseaudio' or 'alsa'.
                 self.synth = fluidsynth.Synth()
                 
                 # FluidSynth settings to prevent trying to open MIDI INPUT devices
@@ -82,7 +83,7 @@ class RealTimeMusicSynthesizer(QThread):
                 self.synth.setting('midi.driver', 'none') 
                 
                 if os.name == "nt":
-                    # For Windows, try dsound then waveout
+                    # For WINDOWS, try dsound then waveout
                     drivers = ["dsound", "waveout", "winmidi"]
                 else:
                     drivers = ["pulseaudio", "alsa", "jack"]
@@ -116,14 +117,14 @@ class RealTimeMusicSynthesizer(QThread):
             print(f"[RealTimeSynth] Error: Failed to initialize FluidSynth: {e}")
             self.synth = None
 
-    def update_emotion(self, probs, features, timestamp):
+    def update_emotion(self, probs, timestamp):
         with QMutexLocker(self.mutex):
             # Update the continuous V-A tracker
             dominant_idx = int(np.argmax(probs))
             confidence = float(probs[dominant_idx])
             self.tracker.update_from_discrete(dominant_idx, confidence)
             
-            self.update_queue.append((probs, features, timestamp))
+            self.update_queue.append((probs, timestamp))
 
     def play(self):
         self.is_playing = True
@@ -175,7 +176,9 @@ class RealTimeMusicSynthesizer(QThread):
         self.is_running = True
         # Track when the NEXT 1-second chunk should start playing
         # We use a 2.2s initial delay to provide:
-        # 1s for the first EEG window, 1s for user-requested lag, 0.2s for processing headroom.
+        # -> 1s for the first EEG window
+        # -> 1s for user-requested lag
+        # -> 0.2s for processing headroom.
         playback_clock = time.time() + 2.2
         
         while self.is_running:
@@ -189,8 +192,9 @@ class RealTimeMusicSynthesizer(QThread):
 
             now = time.time()
             
-            # 1. Pull new 1-second chunks from update_queue
-            # We look ahead up to 0.5 seconds to ensure we always have notes ready
+            # 1. PULL NEW 1-SECOND CHUNKS FROM UPDATE_QUEUE
+            # We dont just wait for all current chunks to be processed before pulling new ones
+            # We look ahead up to 0.5 seconds to ensure we dont run out of notes to play
             if now >= (playback_clock - 0.5):
                 state = None
                 with QMutexLocker(self.mutex):
@@ -198,16 +202,17 @@ class RealTimeMusicSynthesizer(QThread):
                         state = self.update_queue.pop(0)
 
                 if state:
-                    p, f, ts = state
-                    # Schedule this chunk relative to our internal playback clock
-                    self._generate_and_schedule_1s_chunk(p, f, playback_clock, ts)
-                    playback_clock += 1.0 # Advance clock by exactly 1s
+                    p, ts = state
+                    # Schedule current chunk relative to our internal playback clock
+                    self._generate_and_schedule_1s_chunk(p, playback_clock, ts)
+                    playback_clock += 1.0 # clock advances by 1s
                 else:
-                    # If queue is empty, we must wait. 
+                    # In the unlikely event the update queue is empty, 
+                    # we must wait for the next chunk to arrive.
                     if now > playback_clock + 5.0:
                         playback_clock = now
                 
-            # 2. Process scheduled notes in note_queue
+            # 2. PROCESS SCHEDULED NOTES IN NOTE_QUEUE
             with QMutexLocker(self.mutex):
                 remaining_notes = []
                 # Process notes that are due
@@ -234,10 +239,10 @@ class RealTimeMusicSynthesizer(QThread):
 
             time.sleep(0.002) # Higher frequency for tighter scheduling
 
-    def _generate_and_schedule_1s_chunk(self, p, features, chunk_start_time, eeg_timestamp):
+    def _generate_and_schedule_1s_chunk(self, p, chunk_start_time, eeg_timestamp):
         if not self.synth: return
 
-        # ── 1. Pull both Macro (slow mood) and Micro (instantaneous delta) states ──
+        # ── 1. PULL BOTH MACRO (SLOW MOOD) AND MICRO (INSTANTANEOUS DELTA) STATES ──
         state = self.tracker.get_state()
         macro_v = state['macro_v']   
         macro_a = state['macro_a']   
@@ -245,7 +250,7 @@ class RealTimeMusicSynthesizer(QThread):
         micro_a = state['micro_a']   
         is_spike = state['is_spike']
 
-        # ── Dynamic Key Selection (Schubert) ──
+        # ── DYNAMIC KEY SELECTION (Schubert) ──
         if not self.dynamic_key_set:
             self.dynamic_key_set = True
             dom_idx = int(np.argmax(p))
@@ -263,7 +268,7 @@ class RealTimeMusicSynthesizer(QThread):
             self.fundamental_bass_root = 36 + self.base_key_offset
             print(f"[Synthesizer] Dynamic Key Set! Emotion: {EMOTION_LABELS[dom_idx]}, Offset: +{self.base_key_offset}")
 
-        # Track emotion streak for chord-change logic
+        # Track emotion streak for chord-change logic (adds variety for long sustained emotions)
         dominant_idx = int(np.argmax(p))
         if dominant_idx == self.prev_dominant_idx:
             self.emotion_streak += 1
@@ -281,7 +286,7 @@ class RealTimeMusicSynthesizer(QThread):
             
         self.prev_dominant_idx = dominant_idx
 
-        # ── 2. Mode & Chord Quality (driven entirely by MACRO valence) ──
+        # ── 2. MODE & CHORD QUALITY (DRIVEN ENTIRELY BY MACRO VALENCE) ──
         if macro_v > 0.5:
             current_mode = 'lydian' if macro_v > 0.75 else 'ionian'
             chord_type = "triad"
@@ -301,44 +306,44 @@ class RealTimeMusicSynthesizer(QThread):
         self.state_update.emit(current_mode, chord_type, float(self.current_bpm))
         pool = get_mode_pool(current_mode, root_midi=(24 + self.base_key_offset), octaves=8)
 
-        # ── 3. Tempo (MACRO target, MICRO smoothing speed) ──
-        # Macro arousal sets the target BPM (slow drift: 60–140 BPM).
+        # ── 3. TEMPO (MACRO TARGET, MICRO SMOOTHING SPEED) ──
+        # MACRO arousal sets the target BPM (slow drift: 60–140 BPM).
         target_bpm = 100 + (macro_a * 40)
-        # When there's a micro spike the smoothing is snappier so the tempo
+        # When there's a MICRO spike the smoothing is more abrupt so the tempo
         # reacts quickly; during calm periods it glides gradually.
-        alpha = 0.3 + 0.5 * min(1.0, abs(micro_a))  # 0.3 (smooth) → 0.8 (snappy)
+        alpha = 0.3 + 0.5 * min(1.0, abs(micro_a))  # 0.3 (smooth) → 0.8 (abrupt)
         self.current_bpm = (1.0 - alpha) * self.current_bpm + alpha * target_bpm
         sec_per_beat = 60.0 / self.current_bpm
 
-        # ── 4. Velocity (MACRO base + MICRO intensity boost) ──
-        # Base from macro arousal (30–110), boosted by micro arousal magnitude.
+        # ── 4. VELOCITY (MACRO BASE + MICRO INTENSITY BOOST) ──
+        # Base from MACRO arousal (30–110), boosted by MICRO arousal magnitude.
         velocity = int(70 + (macro_a * 30) + (abs(micro_a) * 20))
         velocity = max(30, min(110, velocity))
 
-        # ── 5. Rhythmic Density (MACRO arousal category, MICRO bias toward dense) ──
-        # micro_density_bias shifts probability toward the denser variant within
-        # the macro-selected density category.
+        # ── 5. RHYTHMIC DENSITY (MACRO AROUSAL CATEGORY, MICRO BIAS TOWARD DENSE) ──
+        # MICRO density bias shifts probability toward the denser variant within
+        # the MACRO-selected density category.
         micro_density_bias = min(1.0, abs(micro_a))  # 0 → 1
         if macro_a > 0.6:
-            # Fast category — micro bias further prefers shortest sub-divisions
+            # Fast category — MICRO bias further prefers shortest sub-divisions
             chosen_ratios = (
                 [0.125, 0.125, 0.25, 0.5] if random.random() < (0.4 + 0.4 * micro_density_bias)
                 else [0.25, 0.25, 0.25, 0.25]
             )
         elif macro_a > 0.0:
-            # Medium category — micro bias toward triplet feel
+            # Medium category — MICRO bias toward triplet feel
             chosen_ratios = (
                 [0.333, 0.333, 0.333] if random.random() < (0.3 + 0.4 * micro_density_bias)
                 else [0.5, 0.25, 0.25]
             )
         else:
-            # Slow category — micro bias allows a split even at low arousal
+            # Slow category — MICRO bias allows a split even at low arousal
             chosen_ratios = (
                 [0.5, 0.5] if random.random() < (0.2 + 0.5 * micro_density_bias)
                 else [1.0]
             )
 
-        # ── 6. Harmonic Progression (Emotion-Specific Categories) ──
+        # ── 6. HARMONIC PROGRESSION (EMOTION-SPECIFIC CATEGORIES) ──
         if macro_v > 0.4 and macro_a > 0.0:
             emotion_cat = 'happy'
         elif macro_v < -0.3 and macro_a < 0.0:
@@ -348,12 +353,7 @@ class RealTimeMusicSynthesizer(QThread):
         else:
             emotion_cat = 'neutral'
 
-        PROGRESSIONS = {
-            'happy':   [0, 4, 5, 3],
-            'sad':     [0, 6, 5, 4],
-            'fear':    [0, 0, 1, 0],
-            'neutral': [1, 0, 3, 4],
-        }
+        # --- CHORD PROGRESSION (Markov Transition Matrix) ---
 
         if macro_a > 0.6:
             harmonic_rhythm = random.choice([1, 2])
@@ -362,18 +362,25 @@ class RealTimeMusicSynthesizer(QThread):
         else:
             harmonic_rhythm = 4
 
+        # Advance chord via Markov dice roll
         if self.current_dominant_idx == -1 or self.emotion_streak == 0:
-            self.progression_step = 0
-            self.current_chord_degree = PROGRESSIONS[emotion_cat][self.progression_step]
+            # On start or emotion shift, force a safe root
+            self.current_chord_degree = 0
             self.current_dominant_idx = dominant_idx
         elif self.emotion_streak % harmonic_rhythm == 0:
-            self.progression_step = (self.progression_step + 1) % 4
-            self.current_chord_degree = PROGRESSIONS[emotion_cat][self.progression_step]
+            # Time to change the chord — look up the transition matrix
+            matrix = CHORD_TRANSITIONS.get(emotion_cat, {})
+            if self.current_chord_degree in matrix:
+                options = matrix[self.current_chord_degree]['options']
+                weights = matrix[self.current_chord_degree]['weights']
+                self.current_chord_degree = random.choices(options, weights=weights, k=1)[0]
+            else:
+                self.current_chord_degree = 0  # Fallback
 
         chord_root_idx = 14 + self.current_chord_degree
         chord_notes = get_chord(current_mode, pool[chord_root_idx], chord_type)
 
-        # ── 7. Schedule Notes ──
+        # ── 7. SCHEDULE NOTES ──
         with QMutexLocker(self.mutex):
 
             # ── Accompaniment style (MACRO category + MICRO spike) ──
@@ -439,7 +446,10 @@ class RealTimeMusicSynthesizer(QThread):
 
                 if self.force_snap or random.random() < chord_adherence_prob:
                     # Ground the melody back to the current safe chord tones
-                    target_note = random.choice(chord_notes) + random.choice([12, 24])
+                    # Snap to safe triad tones only (Root, 3rd, 5th)
+                    # to prevent dissonant clashes with any 7ths or extensions
+                    safe_snap_notes = chord_notes[:3]
+                    target_note = random.choice(safe_snap_notes) + random.choice([12, 24])
                     note = int(target_note)
                     try:
                         self.melody_idx = min(range(len(pool)), key=lambda k: abs(pool[k] - note))
