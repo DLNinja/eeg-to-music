@@ -9,9 +9,10 @@ from collections import deque
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, 
     QFileDialog, QPushButton, QGroupBox, QMessageBox, QFrame,
-    QRadioButton, QDoubleSpinBox, QScrollBar, QSpinBox
+    QRadioButton, QDoubleSpinBox, QScrollBar, QSpinBox, QLineEdit, QCheckBox
 )
 from PyQt5.QtCore import pyqtSignal, Qt, QTimer, QThread, QObject
+from PyQt5.QtGui import QIntValidator
 
 from src.model.signal_processing import (
     sf, n_channels, bands,
@@ -21,14 +22,17 @@ from src.model.signal_processing import (
 from src.model.emotion_classifier import EEGResNet
 from src.ui.views.pipeline_view import EegPlotWidget, EmotionPlotWidget
 
-HOST = '127.0.0.1'
-PORT = 65432
-CHANNELS = 62
-SAMPLE_RATE = 200
+# Default values (used as UI defaults, can be changed by user)
+DEFAULT_HOST = '127.0.0.1'
+DEFAULT_PORT = 65432
+DEFAULT_CHANNELS = 62
+DEFAULT_SAMPLE_RATE = 200
 
-# Window size: 1 second of data for classification
-WINDOW_SIZE = SAMPLE_RATE 
-PACKET_SIZE = struct.calcsize(f'!{CHANNELS}f')
+# BioSemi protocol defaults
+# BioSemi ADC resolution: 1 bit = 31.25 nV = 0.00003125 µV
+# So 1 µV = 1 / 0.00003125 = 32000 bits
+DEFAULT_UV_TO_BITS = 32000
+DEFAULT_BYTES_PER_SAMPLE = 3  # 24-bit samples
 
 # ──────────────────────────────────────────────────────
 # Data Stream Thread
@@ -38,15 +42,20 @@ class DataStreamThread(QThread):
     """
     Background thread to listen to the TCP socket continuously
     without blocking the GUI main loop.
+    Decodes BioSemi ActiveView 24-bit LE signed integer format.
     """
     new_data_signal = pyqtSignal(list)
     error_signal = pyqtSignal(str)
     disconnected_signal = pyqtSignal()
 
-    def __init__(self, host, port):
+    def __init__(self, host, port, channels, bytes_per_sample, uv_to_bits):
         super().__init__()
         self.host = host
         self.port = port
+        self.channels = channels
+        self.bytes_per_sample = bytes_per_sample
+        self.uv_to_bits = uv_to_bits
+        self.packet_size = channels * bytes_per_sample
         self.running = False
         self.sock = None
 
@@ -76,7 +85,7 @@ class DataStreamThread(QThread):
 
         while self.running:
             try:
-                raw_data = self.recvall(PACKET_SIZE)
+                raw_data = self.recvall(self.packet_size)
                 if not self.running:
                     break
                     
@@ -85,8 +94,15 @@ class DataStreamThread(QThread):
                     self.running = False
                     break
                     
-                data = struct.unpack(f'!{CHANNELS}f', raw_data)
-                self.new_data_signal.emit(list(data))
+                # Unpack N-bit little-endian signed integers (BioSemi format)
+                values = []
+                for ch in range(self.channels):
+                    offset = ch * self.bytes_per_sample
+                    sample_bytes = raw_data[offset:offset + self.bytes_per_sample]
+                    raw_int = int.from_bytes(sample_bytes, byteorder='little', signed=True)
+                    uv_value = raw_int / self.uv_to_bits
+                    values.append(uv_value)
+                self.new_data_signal.emit(values)
             except socket.timeout:
                 continue
             except Exception as e:
@@ -271,6 +287,74 @@ class SimulatorView(QWidget):
         
         main_layout.addLayout(top_bar)
         
+        # ── Connection Settings ──
+        self.settings_group = QGroupBox("Connection Settings")
+        settings_layout = QVBoxLayout()
+        
+        # Row 1: Host + Port
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel("Host:"))
+        self.input_host = QLineEdit(DEFAULT_HOST)
+        self.input_host.setMaximumWidth(160)
+        row1.addWidget(self.input_host)
+        
+        row1.addSpacing(15)
+        row1.addWidget(QLabel("Port:"))
+        self.input_port = QLineEdit(str(DEFAULT_PORT))
+        self.input_port.setValidator(QIntValidator(1, 65535))
+        self.input_port.setMaximumWidth(80)
+        row1.addWidget(self.input_port)
+        
+        row1.addStretch()
+        settings_layout.addLayout(row1)
+        
+        # Row 2: Channels + Sample Rate
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("Channels:"))
+        self.input_channels = QLineEdit(str(DEFAULT_CHANNELS))
+        self.input_channels.setValidator(QIntValidator(1, 256))
+        self.input_channels.setMaximumWidth(60)
+        row2.addWidget(self.input_channels)
+        
+        row2.addSpacing(15)
+        row2.addWidget(QLabel("Sample Rate (Hz):"))
+        self.input_sample_rate = QLineEdit(str(DEFAULT_SAMPLE_RATE))
+        self.input_sample_rate.setValidator(QIntValidator(1, 10000))
+        self.input_sample_rate.setMaximumWidth(80)
+        row2.addWidget(self.input_sample_rate)
+        
+        row2.addStretch()
+        settings_layout.addLayout(row2)
+        
+        # Row 3: Bytes/Sample + µV/Bit
+        row3 = QHBoxLayout()
+        row3.addWidget(QLabel("Bytes per Sample:"))
+        self.input_bytes_per_sample = QLineEdit(str(DEFAULT_BYTES_PER_SAMPLE))
+        self.input_bytes_per_sample.setValidator(QIntValidator(1, 8))
+        self.input_bytes_per_sample.setMaximumWidth(40)
+        row3.addWidget(self.input_bytes_per_sample)
+        
+        row3.addSpacing(15)
+        row3.addWidget(QLabel("µV to Bits (ADC res.):"))
+        self.input_uv_to_bits = QLineEdit(str(DEFAULT_UV_TO_BITS))
+        self.input_uv_to_bits.setValidator(QIntValidator(1, 1000000))
+        self.input_uv_to_bits.setMaximumWidth(100)
+        row3.addWidget(self.input_uv_to_bits)
+        
+        row3.addStretch()
+        settings_layout.addLayout(row3)
+        
+        # Packet info label
+        self.packet_info_lbl = QLabel()
+        self._update_packet_info()
+        settings_layout.addWidget(self.packet_info_lbl)
+        
+        self.input_channels.textChanged.connect(self._update_packet_info)
+        self.input_bytes_per_sample.textChanged.connect(self._update_packet_info)
+        
+        self.settings_group.setLayout(settings_layout)
+        main_layout.addWidget(self.settings_group)
+        
         # ── Network controls ──
         controls_bar = QHBoxLayout()
         
@@ -279,6 +363,18 @@ class SimulatorView(QWidget):
         self.start_btn.setMinimumHeight(40)
         self.start_btn.setMinimumWidth(150)
         controls_bar.addWidget(self.start_btn)
+        
+        controls_bar.addSpacing(20)
+        
+        self.detection_checkbox = QCheckBox("Enable Emotion Detection")
+        self.detection_checkbox.setChecked(True)
+        controls_bar.addWidget(self.detection_checkbox)
+        
+        controls_bar.addSpacing(20)
+        
+        self.clear_btn = QPushButton("Clear Signal")
+        self.clear_btn.clicked.connect(self._clear_signal)
+        controls_bar.addWidget(self.clear_btn)
         
         controls_bar.addStretch()
         main_layout.addLayout(controls_bar)
@@ -399,6 +495,40 @@ class SimulatorView(QWidget):
         if self.review_mode:
             self._update_review_plots()
 
+    def _update_packet_info(self):
+        try:
+            ch = int(self.input_channels.text())
+            bps = int(self.input_bytes_per_sample.text())
+        except (ValueError, AttributeError):
+            ch, bps = DEFAULT_CHANNELS, DEFAULT_BYTES_PER_SAMPLE
+        packet = ch * bps
+        self.packet_info_lbl.setText(
+            f"Packet size: {ch} ch × {bps} bytes = {packet} bytes/sample"
+        )
+
+    def _clear_signal(self):
+        """Reset all buffers and plots while optionally staying connected."""
+        self.playhead_samples = 0
+        self.display_data = np.zeros((n_channels, self.display_buffer_len))
+        self.emotion_probs = []
+        self.full_history_capacity = self.sf * 60 * 5
+        self.full_history = np.zeros((n_channels, self.full_history_capacity))
+        self.total_samples_received = 0
+        self.classification_buffer = np.zeros((n_channels, self.window_samples))
+        self.buffer_pos = 0
+        self.pending_samples = []
+        
+        # Clear the plots
+        self.eeg_plot.set_data([], np.array([]), "EEG Signal")
+        self.emotion_plot.set_data(
+            np.zeros((1, 4)), np.array([0]), 0, 1
+        )
+        
+        # Hide review mode if active
+        self.review_mode = False
+        self.review_widget.setVisible(False)
+        self.time_scrollbar.setVisible(False)
+
     # ── Streaming state ──────────────────────────────────
 
     def toggle_listening(self):
@@ -410,6 +540,14 @@ class SimulatorView(QWidget):
     def start_listening(self):
         self.start_btn.setText("Connecting...")
         self.start_btn.setEnabled(False)
+        
+        # Read user-configured parameters
+        host = self.input_host.text().strip() or DEFAULT_HOST
+        port = int(self.input_port.text() or DEFAULT_PORT)
+        channels = int(self.input_channels.text() or DEFAULT_CHANNELS)
+        sample_rate = int(self.input_sample_rate.text() or DEFAULT_SAMPLE_RATE)
+        bytes_per_sample = int(self.input_bytes_per_sample.text() or DEFAULT_BYTES_PER_SAMPLE)
+        uv_to_bits = int(self.input_uv_to_bits.text() or DEFAULT_UV_TO_BITS)
         
         # Reset state
         self.review_mode = False
@@ -430,14 +568,17 @@ class SimulatorView(QWidget):
         if not self.worker_thread.isRunning():
             self.worker_thread.start()
 
-        self.stream_thread = DataStreamThread(HOST, PORT)
+        self.stream_thread = DataStreamThread(host, port, channels, bytes_per_sample, uv_to_bits)
         self.stream_thread.new_data_signal.connect(self.on_new_data)
         self.stream_thread.error_signal.connect(self.on_connection_error)
         self.stream_thread.disconnected_signal.connect(self.on_disconnected)
         
+        # Disable settings while connected
+        self.settings_group.setEnabled(False)
+        
         # Change state
         self.is_connected = True
-        self.status_lbl.setText("Status: Connected")
+        self.status_lbl.setText(f"Status: Connected to {host}:{port}")
         self.start_btn.setText("Stop Listening")
         self.start_btn.setEnabled(True)
         
@@ -461,6 +602,7 @@ class SimulatorView(QWidget):
             
         self.status_lbl.setText("Status: Disconnected")
         self.start_btn.setText("Start Listening")
+        self.settings_group.setEnabled(True)
 
     def on_new_data(self, data):
         # Thread-safely push data into pending list
@@ -613,7 +755,8 @@ class SimulatorView(QWidget):
             remaining -= take
             
             if self.buffer_pos >= self.window_samples:
-                self.worker.enqueue(self.classification_buffer)
+                if self.detection_checkbox.isChecked():
+                    self.worker.enqueue(self.classification_buffer)
                 self.buffer_pos = 0
 
         self.playhead_samples += num_new
