@@ -4,6 +4,7 @@ from src.ui.views.home_view import HomeView
 from src.ui.views.plot_view import PlotView
 from src.ui.views.pipeline_view import PipelineView, EegPlotWidget, EmotionPlotWidget
 from src.ui.views.realtime_view import RealTimeView
+from src.ui.views.simulator_view import SimulatorView
 from src.ui.views.music_view import MusicView
 from PyQt5.QtGui import QColor, QPalette
 from PyQt5.QtCore import Qt
@@ -280,6 +281,7 @@ class MainWindow(QMainWindow):
         self.pipeline_view = PipelineView()
         self.music_view = MusicView()
         self.realtime_view = RealTimeView()
+        self.simulator_view = SimulatorView()
         self.about_view = AboutView()
         
         # Add views to stack
@@ -288,6 +290,7 @@ class MainWindow(QMainWindow):
         self.stacked_widget.addWidget(self.pipeline_view)
         self.stacked_widget.addWidget(self.music_view)
         self.stacked_widget.addWidget(self.realtime_view)
+        self.stacked_widget.addWidget(self.simulator_view)
         self.stacked_widget.addWidget(self.about_view)
         
         # Connect navigation signals
@@ -295,11 +298,13 @@ class MainWindow(QMainWindow):
         self.home_view.navigate_to_pipeline_signal.connect(self.show_pipeline_view)
         self.home_view.navigate_to_music_signal.connect(self.show_music_view)
         self.home_view.navigate_to_realtime_signal.connect(self.show_realtime_view)
+        self.home_view.navigate_to_simulator_signal.connect(self.show_simulator_view)
         self.home_view.theme_changed_signal.connect(self._apply_theme)
         self.plot_view.navigate_to_home_signal.connect(self.show_home_view)
         self.pipeline_view.navigate_to_home_signal.connect(self.show_home_view)
         self.music_view.navigate_to_home_signal.connect(self.show_home_view)
         self.realtime_view.navigate_to_home_signal.connect(self.show_home_view)
+        self.simulator_view.navigate_to_home_signal.connect(self.show_home_view)
         self.home_view.navigate_to_about_signal.connect(self.show_about_view)
         self.plot_view.navigate_to_home_signal.connect(self.show_home_view)
         self.pipeline_view.navigate_to_home_signal.connect(self.show_home_view)
@@ -366,6 +371,8 @@ class MainWindow(QMainWindow):
         self._apply_plot_colors(self.pipeline_view.emotion_plot, plot_colors)
         self._apply_plot_colors(self.realtime_view.eeg_plot, plot_colors)
         self._apply_plot_colors(self.realtime_view.emotion_plot, plot_colors)
+        self._apply_plot_colors(self.simulator_view.eeg_plot, plot_colors)
+        self._apply_plot_colors(self.simulator_view.emotion_plot, plot_colors)
 
     def _apply_plot_colors(self, widget, colors):
         widget.bg_color = colors["bg"]
@@ -385,6 +392,9 @@ class MainWindow(QMainWindow):
     
     def show_realtime_view(self):
         self.stacked_widget.setCurrentWidget(self.realtime_view)
+        
+    def show_simulator_view(self):
+        self.stacked_widget.setCurrentWidget(self.simulator_view)
         
     def show_about_view(self):
         self.stacked_widget.setCurrentWidget(self.about_view)

@@ -7,6 +7,7 @@ class HomeView(QWidget):
     navigate_to_pipeline_signal = pyqtSignal()
     navigate_to_music_signal = pyqtSignal()
     navigate_to_realtime_signal = pyqtSignal()
+    navigate_to_simulator_signal = pyqtSignal()
     theme_changed_signal = pyqtSignal(str)  # "dark" or "light"
     # Emit signal to request navigation to 'about' view
     navigate_to_about_signal = pyqtSignal()
@@ -58,7 +59,7 @@ class HomeView(QWidget):
         layout.addSpacing(20)
         
         # Music button
-        self.music_btn = QPushButton("Music Player & Visualizer")
+        self.music_btn = QPushButton("Music Player + Visualizer")
         self.music_btn.setMinimumSize(300, 60)
         self.music_btn.setFont(btn_font)
         self.music_btn.clicked.connect(self.navigate_to_music_signal.emit)
@@ -72,6 +73,15 @@ class HomeView(QWidget):
         self.realtime_btn.setFont(btn_font)
         self.realtime_btn.clicked.connect(self.navigate_to_realtime_signal.emit)
         layout.addWidget(self.realtime_btn, alignment=Qt.AlignCenter)
+        
+        layout.addSpacing(20)
+        
+        # Simulator button
+        self.simulator_btn = QPushButton("Headset Simulator")
+        self.simulator_btn.setMinimumSize(300, 60)
+        self.simulator_btn.setFont(btn_font)
+        self.simulator_btn.clicked.connect(self.navigate_to_simulator_signal.emit)
+        layout.addWidget(self.simulator_btn, alignment=Qt.AlignCenter)
         
         layout.addSpacing(40)
         
