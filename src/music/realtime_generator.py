@@ -81,10 +81,6 @@ class RealTimeMusicSynthesizer(QThread):
         self.active_spike_profile = None
         # Phase 2: Fear sustain pedal state
         self.fear_sustain_active = False
-        # Phase 7: Fear State Machine
-        self.fear_submode = 'ambiguity'
-        self.fear_tick_counter = 0
-        self.fear_ramp_velocity = 35
 
     def _init_synth(self):
         try:
@@ -343,8 +339,12 @@ class RealTimeMusicSynthesizer(QThread):
         is_neutral = (emotion_cat == 'neutral')
 
         if emotion_cat == 'neutral':
-            current_mode = 'mixolydian'
-            chord_type = 'sus2'
+            # Chameleon: Dorian when leaning dark, Mixolydian when leaning bright
+            if secondary_label in ('sad', 'fear'):
+                current_mode = 'dorian'
+            else:
+                current_mode = 'mixolydian'
+            chord_type = 'cinematic_open'  # Triad + mode color note for distinct cinematic feel
         elif emotion_cat == 'happy':
             current_mode = 'lydian' if macro_v > 0.75 else 'ionian'
             chord_type = "triad"
@@ -352,34 +352,19 @@ class RealTimeMusicSynthesizer(QThread):
             current_mode = 'aeolian'
             chord_type = "triad"
         else: # fear
-            if macro_v > -0.2:
-                current_mode = 'dorian'
-                chord_type = "sus2"
-            elif macro_v > -0.6:
-                current_mode = 'aeolian'
-                chord_type = "triad"
+            # All fear uses non-tertian voicings (no 3rd = no major/minor identity)
+            if macro_v > -0.4:
+                current_mode = 'phrygian'        # ♭2 = brooding, oppressive, claustrophobic
+            elif macro_v > -0.7:
+                current_mode = 'harmonic_minor'   # Augmented 2nd = gothic, eerie, Dracula
             else:
-                # Use locrian extremely rarely, stick to phrygian mostly
-                current_mode = 'phrygian' if macro_v > -0.95 else 'locrian'
-                chord_type = "dim"
+                current_mode = 'phrygian_dominant' # ♭2 + M3 = alien, extreme, snake-charmer
+            chord_type = "fear_open"  # Root + P5 + 6th (non-tertian, avoids happy/sad territory)
 
         self.state_update.emit(current_mode, chord_type, float(self.current_bpm))
         pool = get_mode_pool(current_mode, root_midi=(24 + self.base_key_offset), octaves=8)
 
-        # ── Neutral pentatonic restriction ──
-        if is_neutral:
-            pentatonic_degrees = [0, 1, 3, 4, 5]
-            pentatonic_pool = []
-            intervals = get_mode_intervals(current_mode)
-            root = 24 + self.base_key_offset
-            for oct in range(8):
-                for deg in pentatonic_degrees:
-                    note = root + (oct * 12) + intervals[deg]
-                    if note <= 127:
-                        pentatonic_pool.append(note)
-            melody_pool = pentatonic_pool
-        else:
-            melody_pool = pool
+        melody_pool = pool
 
         # ── 3. TEMPO (MACRO TARGET, MICRO SMOOTHING SPEED) ──
         # MACRO arousal sets the target BPM (slow drift: 60–140 BPM).
@@ -409,6 +394,9 @@ class RealTimeMusicSynthesizer(QThread):
         # Sad needs more presence (higher velocity)
         if macro_label == 'sad':
             velocity = max(50, min(110, velocity + 15))
+        # Neutral needs enough presence to feel emotionally engaged
+        if emotion_cat == 'neutral':
+            velocity = max(55, velocity)
 
         # Apply spike velocity modifier
         if self.active_spike_profile:
@@ -456,37 +444,15 @@ class RealTimeMusicSynthesizer(QThread):
         # Sad & Neutral chord variety: prevent boring repetition at slow tempos
         if emotion_cat in ('sad', 'neutral') and self.emotion_streak > 2:
             harmonic_rhythm = min(harmonic_rhythm, 2)
-        # Even more aggressive for neutral — never hold more than 3 steps
+        # Neutral: AGGRESSIVE chord movement — never hold more than 2 steps
         if emotion_cat == 'neutral':
-            harmonic_rhythm = min(harmonic_rhythm, 3)
+            harmonic_rhythm = min(harmonic_rhythm, 2)
+        # Fear: keep chords moving at a steady moderate pace
+        if emotion_cat == 'fear':
+            harmonic_rhythm = min(harmonic_rhythm, 2)
 
         # Advance chord via Markov dice roll
-        if emotion_cat == 'fear':
-            # Fear State Machine & chord override (eerie submodes)
-            if self.current_dominant_idx == -1 or self.emotion_streak == 0 or self.prev_dominant_idx != 2:
-                self.fear_submode = random.choices(['ambiguity', 'eerie_melodic', 'climax'], weights=[65, 30, 5])[0]
-                self.fear_tick_counter = 0
-                self.fear_ramp_velocity = 35
-                self.current_chord_degree = 0
-                self.current_dominant_idx = dominant_idx
-
-            self.fear_tick_counter += 1
-            if self.fear_submode == 'eerie_melodic':
-                # Descending harmony (e.g. 0 -> 6 -> 5 -> 4)
-                if self.emotion_streak % harmonic_rhythm == 0:
-                    self.current_chord_degree = (self.current_chord_degree - 1) % 7
-            else:
-                # Ambiguity/Climax stays mostly on tonic or steps slightly
-                if self.emotion_streak % harmonic_rhythm == 0:
-                    matrix = CHORD_TRANSITIONS.get(emotion_cat, {})
-                    if self.current_chord_degree in matrix:
-                        options = matrix[self.current_chord_degree]['options']
-                        weights = matrix[self.current_chord_degree]['weights']
-                        self.current_chord_degree = random.choices(options, weights=weights, k=1)[0]
-                    else:
-                        self.current_chord_degree = 0
-
-        elif self.current_dominant_idx == -1 or self.emotion_streak == 0:
+        if self.current_dominant_idx == -1 or self.emotion_streak == 0:
             # On start or emotion shift, force a safe root
             self.current_chord_degree = 0
             self.current_dominant_idx = dominant_idx
@@ -510,6 +476,18 @@ class RealTimeMusicSynthesizer(QThread):
             chord_notes = [pool[chord_root_idx], pool[chord_root_idx + 3], pool[chord_root_idx + 4]]
         elif chord_type == "dim":
             chord_notes = [pool[chord_root_idx], pool[chord_root_idx + 2], pool[chord_root_idx] + 6]
+        elif chord_type == "fear_open":
+            # Non-tertian: Root + P5 + 6th degree (skips 3rd)
+            chord_notes = [pool[chord_root_idx], pool[chord_root_idx + 4], pool[chord_root_idx + 5]]
+        elif chord_type == "cinematic_open":
+            # Cinematic modal: triad + mode color note
+            if current_mode == 'dorian':
+                chord_notes = [pool[chord_root_idx], pool[chord_root_idx + 2],
+                               pool[chord_root_idx + 4], pool[chord_root_idx + 5]]
+            else:  # mixolydian
+                ninth = min(127, pool[chord_root_idx + 1] + 12)
+                chord_notes = [pool[chord_root_idx], pool[chord_root_idx + 2],
+                               pool[chord_root_idx + 4], ninth]
         else:
             chord_notes = [pool[chord_root_idx], pool[chord_root_idx + 2], pool[chord_root_idx + 4]]
 
@@ -519,6 +497,13 @@ class RealTimeMusicSynthesizer(QThread):
 
         # Apply spike chord coloring (only for sustained spikes, 3+ samples)
         if self.active_spike_profile and self.spike_duration_counter > 2:
+            # EPIC MODAL override: force heroic i→bVI→bVII cycle before coloring
+            if self.active_spike_profile.get('chord_color') == 'epic_modal':
+                epic_sequence = [0, 5, 6]  # i → bVI → bVII heroic loop
+                self.current_chord_degree = epic_sequence[self.emotion_streak % 3]
+                chord_root_idx = 14 + self.current_chord_degree
+                # Rebuild chord from the forced epic degree
+                chord_notes = [pool[chord_root_idx], pool[chord_root_idx + 2], pool[chord_root_idx + 4]]
             chord_notes = apply_spike_chord_color(chord_notes, self.active_spike_profile['chord_color'])
 
         # Spike rest probability override for melody
@@ -570,55 +555,42 @@ class RealTimeMusicSynthesizer(QThread):
                     self.note_queue.append((chunk_start_time + 0.99, 0, int(n), 0,         0,   False, eeg_timestamp + 0.99))
 
             elif emotion_cat == 'fear':
-                # Brings chords higher up to bridge the gap with the melody
-                root = max(0, int(chord_notes[0]) - 12)
-                fifth_down = max(0, int(chord_notes[2]) - 12)
+                # Fear: heavy non-tertian voicing (Root + P5 + 6th)
+                fear_chord = list(chord_notes)
+                while fear_chord[0] > 48:  # Root in deep bass (below C3)
+                    fear_chord[0] -= 12
+                fear_chord[1] = fear_chord[1] - 12 if fear_chord[1] > 69 else fear_chord[1]
+                fear_chord[2] = fear_chord[2] - 12 if fear_chord[2] > 69 else fear_chord[2]
+                vel = min(110, max(50, velocity + micro_chord_boost))
 
-                # Route submode logic
-                if self.fear_submode == 'climax':
-                    vel = 110 if random.random() < 0.2 else 0 # 20% chance of sudden stab
-                    if vel > 0:
-                        minor_2nd = min(127, root + 1)
-                        self.note_queue.append((chunk_start_time,        0, root, vel, 1.0, True,  eeg_timestamp))
-                        self.note_queue.append((chunk_start_time,        0, fifth_down, vel - 10, 1.0, True,  eeg_timestamp))
-                        self.note_queue.append((chunk_start_time,        0, minor_2nd, vel - 10, 1.0, True,  eeg_timestamp))
-                        
-                        self.note_queue.append((chunk_start_time + 0.25, 0, root, 0,   0,   False, eeg_timestamp + 0.25))
-                        self.note_queue.append((chunk_start_time + 0.99, 0, fifth_down, 0,   0,   False, eeg_timestamp + 0.99))
-                        self.note_queue.append((chunk_start_time + 0.25, 0, minor_2nd, 0,   0,   False, eeg_timestamp + 0.25))
-                    else:
-                        self.note_queue.append((chunk_start_time + 0.99, 0, root, 0,   0,   False, eeg_timestamp + 0.99))
-                else:
-                    if self.fear_submode == 'ambiguity':
-                        if self.fear_tick_counter % 15 == 0:
-                            self.fear_ramp_velocity = 45 # Reset, increased base intensity
-                        else:
-                            self.fear_ramp_velocity += 4
-                        vel = min(100, self.fear_ramp_velocity)
-                    else:
-                        vel = random.randint(55, 75) # Constant brooding, higher base
+                for n in fear_chord:
+                    self.note_queue.append((chunk_start_time, 0, int(n), vel, 1.0, True, eeg_timestamp))
+                    self.note_queue.append((chunk_start_time + 0.99, 0, int(n), 0, 0, False, eeg_timestamp + 0.99))
 
-                    minor_2nd = min(127, root + 1)
-                    self.note_queue.append((chunk_start_time,        0, root, vel, 1.0, True,  eeg_timestamp))
-                    self.note_queue.append((chunk_start_time + 0.99, 0, root, 0,   0,   False, eeg_timestamp + 0.99))
-                    
-                    if random.random() < 0.15:
-                        self.note_queue.append((chunk_start_time,        0, minor_2nd, max(10, vel // 3), 1.0, True,  eeg_timestamp))
-                        self.note_queue.append((chunk_start_time + 0.99, 0, minor_2nd, 0,                 0,   False, eeg_timestamp + 0.99))
-                        
-                    self.note_queue.append((chunk_start_time,        0, fifth_down, max(10, vel - 15), 1.0, True,  eeg_timestamp))
-                    self.note_queue.append((chunk_start_time + 0.99, 0, fifth_down, 0,                 0,   False, eeg_timestamp + 0.99))
+                # RARE dissonance: ~5% chance of a quiet tritone or minor 2nd
+                if random.random() < 0.05:
+                    dissonant_note = min(127, int(fear_chord[0]) + random.choice([1, 6]))
+                    self.note_queue.append((chunk_start_time, 0, dissonant_note, max(10, vel // 4), 0.5, True, eeg_timestamp))
+                    self.note_queue.append((chunk_start_time + 0.5, 0, dissonant_note, 0, 0, False, eeg_timestamp + 0.5))
 
             elif emotion_cat == 'neutral':
-                # quartal_float (Diatonic): Stack 3 notes using pool indices to guarantee diatonic 4ths/3rds
-                idx = chord_root_idx
-                q1 = pool[idx]
-                q2 = pool[idx + 3] if (idx + 3) < len(pool) else pool[-1]
-                q3 = pool[idx + 6] if (idx + 6) < len(pool) else pool[-1]
+                # Open wide voicing for sad - happy balance and spaciousness
+                root  = int(chord_notes[0])
+                third = int(chord_notes[1]) + 12   # 3rd up an octave for spacious spread
+                fifth = int(chord_notes[2]) - 12   # 5th down toward bass for depth
                 
-                for n in [q1, q2, q3]:
-                    self.note_queue.append((chunk_start_time,        0, int(n), chord_vel, 1.0, True,  eeg_timestamp))
-                    self.note_queue.append((chunk_start_time + 0.99, 0, int(n), 0,         0,   False, eeg_timestamp + 0.99))
+                has_color = len(chord_notes) > 3
+                if has_color:
+                    color = int(chord_notes[3])        # Mode color note (M6 or 9th) stays natural
+
+                # MIDI range safety
+                fifth = fifth if fifth >= 0 else fifth + 12
+                third = third if third <= 127 else third - 12
+
+                voices = [root, fifth, color, third] if has_color else [root, fifth, third]
+                for n in voices:
+                    self.note_queue.append((chunk_start_time, 0, int(n), chord_vel, 1.0, True, eeg_timestamp))
+                    self.note_queue.append((chunk_start_time + 0.99, 0, int(n), 0, 0, False, eeg_timestamp + 0.99))
 
             # ── Melody (MACRO for harmonic adherence, MICRO for expression) ──
             melody_notes_for_trill = []  # Track for anti-trill detection
@@ -639,86 +611,78 @@ class RealTimeMusicSynthesizer(QThread):
                 if dur_sec < 0.01:
                     break
 
+                # Harmonic adherence
+                chord_adherence_prob = 0.7 + (macro_v * 0.2) + (micro_v * 0.1)
+                chord_adherence_prob = max(0.15, min(0.95, chord_adherence_prob))
+                if emotion_cat in ('happy', 'sad'):
+                    chord_adherence_prob = max(0.80, chord_adherence_prob)
+                if emotion_cat == 'neutral':
+                    chord_adherence_prob = max(0.80, chord_adherence_prob)
                 if emotion_cat == 'fear':
-                    # Sparse eerie right hand: mostly rests with occasional notes
-                    if random.random() < 0.55:
-                        time_offset += dur_sec
-                        continue  # REST — silence builds tension
-                    # Bring melody register down to approach the chords (C4-C5 range)
-                    self.melody_idx = random.randint(28, min(len(active_pool) - 1, 36))
-                    note = int(active_pool[self.melody_idx])
-                    # Rare chromatic coloring for eeriness (sparing for musicality)
-                    if random.random() < 0.15:
-                        note += random.choice([-1, 1, 6, -6])
+                    chord_adherence_prob = max(0.75, chord_adherence_prob)
+
+                if self.force_snap or random.random() < chord_adherence_prob:
+                    # Ground the melody to chord tones
+                    safe_snap_notes = chord_notes[:3]
+                    if emotion_cat == 'neutral' and len(safe_snap_notes) > 1 and random.random() < 0.4:
+                        safe_snap_notes = safe_snap_notes[1:]  # skip root occasionally
+                    target_note = random.choice(safe_snap_notes) + random.choice([12, 24])
+                    # Fear: snap to lower octave for darker register
+                    if emotion_cat == 'fear':
+                        target_note = random.choice(safe_snap_notes) + random.choice([0, 12])
+                    note = int(target_note)
+                    try:
+                        self.melody_idx = min(range(len(active_pool)), key=lambda k: abs(active_pool[k] - note))
+                    except Exception:
+                        pass
+                    if self.force_snap:
+                        self.force_snap = False
                 else:
-                    # Harmonic adherence: driven by macro valence (stable pull toward key)
-                    # plus a small corrective nudge from micro valence (momentary brightness/darkness)
-                    chord_adherence_prob = 0.7 + (macro_v * 0.2) + (micro_v * 0.1)
-                    chord_adherence_prob = max(0.15, min(0.95, chord_adherence_prob))
-                    # Happy/Sad: higher floor to prevent dissonant clashes
-                    if emotion_cat in ('happy', 'sad'):
-                        chord_adherence_prob = max(0.80, chord_adherence_prob)
-                    # Neutral: lower adherence to reduce tonic repetition, but prefer non-root tones
-                    if emotion_cat == 'neutral':
-                        chord_adherence_prob = min(0.55, chord_adherence_prob)
+                    step = self.markov_engine.query_next_interval(emotion_cat, self.prev_melody_intervals)
+                    self.prev_melody_intervals.pop(0)
+                    self.prev_melody_intervals.append(step)
+                    self.melody_idx += step
+                    self.melody_idx = max(21, min(len(active_pool)-1, self.melody_idx))
+                    note = int(active_pool[self.melody_idx])
 
-                    if self.force_snap or random.random() < chord_adherence_prob:
-                        # Ground the melody back to the current safe chord tones
-                        # Snap to safe triad tones only (Root, 3rd, 5th)
-                        # to prevent dissonant clashes with any 7ths or extensions
-                        safe_snap_notes = chord_notes[:3]
-                        # Neutral: prefer non-root tones to reduce tonic repetition
-                        if emotion_cat == 'neutral' and len(safe_snap_notes) > 1:
-                            safe_snap_notes = safe_snap_notes[1:]  # skip root
-                        target_note = random.choice(safe_snap_notes) + random.choice([12, 24])
-                        note = int(target_note)
-                        try:
-                            self.melody_idx = min(range(len(active_pool)), key=lambda k: abs(active_pool[k] - note))
-                        except Exception:
-                            pass
-                        
-                        if self.force_snap:
-                            self.force_snap = False
-                    else:
-                        step = self.markov_engine.query_next_interval(emotion_cat, self.prev_melody_intervals)
-                        self.prev_melody_intervals.pop(0)
-                        self.prev_melody_intervals.append(step)
-                        self.melody_idx += step
-                        self.melody_idx = max(21, min(len(active_pool)-1, self.melody_idx))
-                        note = int(active_pool[self.melody_idx])
+                # Fear: lower register with descending bias
+                if emotion_cat == 'fear':
+                    self.melody_idx = max(14, min(len(active_pool) - 1, self.melody_idx))
+                    if random.random() < 0.30 and self.melody_idx > 16:
+                        self.melody_idx -= 1
+                    note = int(active_pool[self.melody_idx])
 
-                    # Micro valence expression — ONLY for fear/neutral transitions
-                    if micro_v > 0.4 and random.random() < 0.35:
-                        note += 12  # Octave jump is always safe
-                    if emotion_cat == 'fear' and micro_v < -0.4 and random.random() < 0.25:
-                        note += random.choice([-1, 1])  # Chromatic only for fear
+                # Micro valence expression
+                if micro_v > 0.4 and random.random() < 0.35:
+                    note += 12
 
                 # Apply spike melody register shift
                 if self.active_spike_profile and self.spike_duration_counter > 2:
                     note += self.active_spike_profile['melody_register']
 
-                # Cap super high notes to prevent whistle notes (C6 is 84)
+                # Cap super high notes
                 while note > 84:
                     note -= 12
-
                 note = max(0, min(127, note))
-                
+
                 # Universal Dissonance Guard
-                if emotion_cat in ('happy', 'sad', 'neutral'):
+                if emotion_cat in ('happy', 'sad', 'neutral', 'fear'):
                     note = resolve_dissonance(note, chord_notes)
 
                 # Determine rest probability
                 if spike_rest_prob is not None:
                     is_rest = random.random() < spike_rest_prob
-                elif is_neutral and random.random() < 0.3:
+                elif is_neutral and random.random() < 0.10:
+                    is_rest = True  # Occasional breaths, not constant gaps
+                elif emotion_cat == 'fear' and random.random() < 0.15:
                     is_rest = True
                 else:
                     is_rest = False
 
                 if not is_rest:
-                    # Fear melody: separate velocity for eerie dynamics
+                    # Fear melody: slightly lower velocity for brooding feel
                     if emotion_cat == 'fear':
-                        mel_vel = random.randint(90, 110) if random.random() < 0.12 else random.randint(55, 75)
+                        mel_vel = max(45, min(85, velocity - 5))
                     else:
                         mel_vel = int(velocity)
 
@@ -731,14 +695,12 @@ class RealTimeMusicSynthesizer(QThread):
 
                 time_offset += dur_sec
 
-            # ── Anti-trill guard (applies to happy, sad, neutral) ──
-            # Rule: max 1 trill per 5 seconds — if ANY trill detected, force snap next chunk
-            if emotion_cat in ('happy', 'sad', 'neutral') and len(melody_notes_for_trill) >= 4:
+            # ── Anti-trill guard (applies to all emotions) ──
+            if len(melody_notes_for_trill) >= 4:
                 if detect_trill(melody_notes_for_trill):
                     self.consecutive_trill_count += 1
                 else:
                     self.consecutive_trill_count = 0
-                # Trigger on FIRST trill detection
                 if self.consecutive_trill_count >= 1:
                     self.force_snap = True
                     self.consecutive_trill_count = 0

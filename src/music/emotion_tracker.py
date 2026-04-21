@@ -15,20 +15,23 @@ class EmotionTracker:
         self.history = deque(maxlen=window_size) # knows the last 10 states
         self.spike_threshold = spike_threshold
         
-        # BACKWARD COMPATIBILITY: EMOTIONS -> V-A SPACE
-        # 3: HAPPY, 1: SAD, 2: FEAR, 0: NEUTRAL
         self.LABEL_TO_VA = {
-            3: (0.8, 0.8),   # Top-Right: High V, High A
-            1: (-0.8, -0.8), # Bottom-Left: Low V, Low A
-            2: (-0.5, 0.9),  # Top-Left: Low V, High A
-            0: (0.0, 0.0)    # Center: Neutral
+            3: (0.8, 0.8),   # Happy: High V, High A
+            1: (-0.8, -0.8), # Sad: Low V, Low A
+            2: (-0.8, 0.8),  # Fear: Low V, High A
+            0: (0.8, -0.8)   # Neutral (Calm Happy): High V, Low A
         }
+
+        # Label tracking for spike direction detection
+        self.current_label_idx = 0
+        self.LABEL_NAMES = {0: 'neutral', 1: 'sad', 2: 'fear', 3: 'happy'}
 
     def update_from_discrete(self, label_idx, confidence=1.0):
         """
         Adapts the existing emotion classifier output into the V-A space.
         Weighting by confidence allows for more fluid movement between quadrants.
         """
+        self.current_label_idx = label_idx
         target_v, target_a = self.LABEL_TO_VA.get(label_idx, (0.0, 0.0))
         self.update_from_va(target_v * confidence, target_a * confidence)
 
@@ -60,7 +63,8 @@ class EmotionTracker:
         """Returns the current state of both streams for the generation engine."""
         macro_v, macro_a = self.get_macro_state()
         micro_v, micro_a = self.get_micro_state(self.v, self.a)
-        
+        is_spike = abs(micro_a) > self.spike_threshold or abs(micro_v) > self.spike_threshold
+
         return {
             "valence": self.v,
             "arousal": self.a,
@@ -68,5 +72,17 @@ class EmotionTracker:
             "macro_a": macro_a,
             "micro_v": micro_v,
             "micro_a": micro_a,
-            "is_spike": abs(micro_a) > self.spike_threshold
+            "is_spike": is_spike,
+            "spike_label": self.LABEL_NAMES.get(self.current_label_idx, 'neutral'),
+            "macro_label": self._classify_macro(macro_v, macro_a)
         }
+
+    def _classify_macro(self, v, a):
+        """Classify macro V-A coordinates into an emotion category using exact quadrant math."""
+        if v > 0.0 and a > 0.0:
+            return 'happy'
+        elif v < 0.0 and a < 0.0:
+            return 'sad'
+        elif v < 0.0 and a >= 0.0:
+            return 'fear'
+        return 'neutral'

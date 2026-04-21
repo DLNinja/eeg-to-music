@@ -31,24 +31,26 @@ CHORD_TRANSITIONS = {
         6: {'options': [0, 2, 5],       'weights': [50, 20, 30]}
     },
     'fear': {
-        # Phrygian/Locrian: Tense, droning on the root, anxious half-steps to the flat 2nd (II)
-        0: {'options': [0, 1, 2],       'weights': [70, 20, 10]},
-        1: {'options': [0, 2],          'weights': [80, 20]},
-        2: {'options': [0, 1],          'weights': [50, 50]},
-        3: {'options': [0, 4],          'weights': [80, 20]},
-        4: {'options': [0, 1],          'weights': [80, 20]},
-        5: {'options': [0, 6],          'weights': [70, 30]},
-        6: {'options': [0],             'weights': [100]}
+        # Phrygian: i↔bII oscillation is the backbone, bvii→bVI descent is secondary
+        # Fewer options + heavy weights = clear directional momentum
+        0: {'options': [1, 6],          'weights': [60, 40]},       # i → bII (horror!) or bvii (descent)
+        1: {'options': [0, 2],          'weights': [70, 30]},       # bII → i (loop back) or bIII (mysterious)
+        2: {'options': [0, 1],          'weights': [45, 55]},       # bIII → bII or i
+        3: {'options': [0, 1],          'weights': [35, 65]},       # iv → bII (pull toward tension)
+        4: {'options': [1, 0],          'weights': [70, 30]},       # v° → bII (tension → dread)
+        5: {'options': [1, 6],          'weights': [60, 40]},       # bVI → bII (doom descent end) or bvii
+        6: {'options': [5, 0],          'weights': [65, 35]}        # bvii → bVI (doom descent) or i
     },
     'neutral': {
-        # Dorian/Mixolydian: Wandering jazz/pop turnarounds, avoiding aggressive resolutions
-        0: {'options': [0, 1, 3, 4],    'weights': [20, 30, 30, 20]},
-        1: {'options': [0, 3, 4],       'weights': [20, 40, 40]},
-        2: {'options': [1, 5],          'weights': [50, 50]},
-        3: {'options': [0, 1, 4],       'weights': [40, 30, 30]},
-        4: {'options': [0, 1, 3],       'weights': [30, 30, 40]},
-        5: {'options': [1, 3],          'weights': [50, 50]},
-        6: {'options': [0, 3],          'weights': [50, 50]}
+        # Dorian/Mixolydian: IV and bVII are the two pillars — root ALWAYS departs
+        # Signature chains: I→IV→bVII→I, I→bVII→IV→I, i→IV→i (vamp)
+        0: {'options': [3, 6],          'weights': [50, 50]},       # Root → IV or bVII (always moves!)
+        1: {'options': [0, 3],          'weights': [40, 60]},       # ii → IV (Dorian pull) or I
+        2: {'options': [6, 3],          'weights': [60, 40]},       # bIII → bVII (Dorian descent) or IV
+        3: {'options': [0, 6, 1],       'weights': [30, 45, 25]},   # IV → bVII (Mixo signature!) or I or ii
+        4: {'options': [0, 3],          'weights': [40, 60]},       # v → IV or I
+        5: {'options': [6, 0],          'weights': [70, 30]},       # bVI → bVII (nostalgic resolution)
+        6: {'options': [0, 3, 5],       'weights': [30, 45, 25]}    # bVII → IV (Mixo!) or I or bVI
     }
 }
 
@@ -56,18 +58,18 @@ CHORD_TRANSITIONS = {
 # Maps (macro_emotion, spike_emotion) → musical modifiers for spike moments.
 # Each profile defines how the music is temporarily colored during a spike transition.
 SPIKE_PROFILES = {
-    ('happy', 'sad'):     {'name': 'BITTERSWEET',  'tempo_mult': 0.85, 'vel_shift': -15, 'chord_color': 'add_minor_3rd', 'melody_register': -6, 'rest_prob': 0.2},
-    ('happy', 'neutral'): {'name': 'SERENITY',     'tempo_mult': 0.75, 'vel_shift': -20, 'chord_color': 'sus2',          'melody_register': 0,  'rest_prob': 0.35},
-    ('happy', 'fear'):    {'name': 'ANXIETY',       'tempo_mult': 1.15, 'vel_shift': +10, 'chord_color': 'add_tritone',   'melody_register': +3, 'rest_prob': 0.0},
-    ('sad', 'happy'):     {'name': 'HOPE',          'tempo_mult': 1.10, 'vel_shift': +15, 'chord_color': 'major_lift',    'melody_register': +6, 'rest_prob': 0.0},
-    ('sad', 'neutral'):   {'name': 'ACCEPTANCE',    'tempo_mult': 0.90, 'vel_shift': -5,  'chord_color': 'resolve_root',  'melody_register': 0,  'rest_prob': 0.25},
-    ('sad', 'fear'):      {'name': 'DISTURBED',     'tempo_mult': 1.05, 'vel_shift': +5,  'chord_color': 'add_quiet_dissonance', 'melody_register': 0, 'rest_prob': 0.1},
-    ('fear', 'happy'):    {'name': 'COURAGE',       'tempo_mult': 1.20, 'vel_shift': +25, 'chord_color': 'major_power',   'melody_register': +6, 'rest_prob': 0.0},
-    ('fear', 'sad'):      {'name': 'DESPAIR',       'tempo_mult': 0.70, 'vel_shift': +10, 'chord_color': 'thick_minor',   'melody_register': -3, 'rest_prob': 0.15},
-    ('fear', 'neutral'):  {'name': 'RELIEF',        'tempo_mult': 0.75, 'vel_shift': -15, 'chord_color': 'resolve_major', 'melody_register': 0,  'rest_prob': 0.30},
-    ('neutral', 'happy'): {'name': 'AWAKENING',     'tempo_mult': 1.15, 'vel_shift': +15, 'chord_color': 'bright_triad',  'melody_register': +3, 'rest_prob': 0.0},
-    ('neutral', 'sad'):   {'name': 'MELANCHOLY',    'tempo_mult': 0.90, 'vel_shift': -10, 'chord_color': 'minor_color',   'melody_register': -3, 'rest_prob': 0.2},
-    ('neutral', 'fear'):  {'name': 'UNEASE',        'tempo_mult': 1.10, 'vel_shift': +5,  'chord_color': 'add_tritone',   'melody_register': +3, 'rest_prob': 0.1},
+    ('happy', 'sad'):     {'name': 'BITTERSWEET',  'tempo_mult': 0.85, 'vel_shift': -15, 'chord_color': 'add_minor_3rd',       'melody_register': -6, 'rest_prob': 0.2},
+    ('happy', 'neutral'): {'name': 'SERENITY',     'tempo_mult': 0.75, 'vel_shift': -20, 'chord_color': 'sus2',                'melody_register': 0,  'rest_prob': 0.35},
+    ('happy', 'fear'):    {'name': 'ANXIETY',       'tempo_mult': 1.15, 'vel_shift': +10, 'chord_color': 'suspended_tension',   'melody_register': +3, 'rest_prob': 0.0},
+    ('sad', 'happy'):     {'name': 'HOPE',          'tempo_mult': 1.10, 'vel_shift': +15, 'chord_color': 'major_lift',          'melody_register': +6, 'rest_prob': 0.0},
+    ('sad', 'neutral'):   {'name': 'ACCEPTANCE',    'tempo_mult': 0.90, 'vel_shift': -5,  'chord_color': 'picardy_lift',        'melody_register': 0,  'rest_prob': 0.25},
+    ('sad', 'fear'):      {'name': 'DISTURBED',     'tempo_mult': 1.05, 'vel_shift': +5,  'chord_color': 'add_quiet_dissonance','melody_register': 0,  'rest_prob': 0.1},
+    ('fear', 'happy'):    {'name': 'COURAGE',       'tempo_mult': 1.20, 'vel_shift': +25, 'chord_color': 'epic_modal',          'melody_register': +6, 'rest_prob': 0.0},
+    ('fear', 'sad'):      {'name': 'DESOLATION',    'tempo_mult': 0.70, 'vel_shift': +10, 'chord_color': 'hollow_madd9',        'melody_register': -3, 'rest_prob': 0.15},
+    ('fear', 'neutral'):  {'name': 'RELIEF',        'tempo_mult': 0.75, 'vel_shift': -15, 'chord_color': 'resolve_major',       'melody_register': 0,  'rest_prob': 0.30},
+    ('neutral', 'happy'): {'name': 'AWAKENING',     'tempo_mult': 1.15, 'vel_shift': +15, 'chord_color': 'bright_triad',        'melody_register': +3, 'rest_prob': 0.0},
+    ('neutral', 'sad'):   {'name': 'MELANCHOLY',    'tempo_mult': 0.90, 'vel_shift': -10, 'chord_color': 'minor_color',         'melody_register': -3, 'rest_prob': 0.2},
+    ('neutral', 'fear'):  {'name': 'UNEASE',        'tempo_mult': 1.10, 'vel_shift': +5,  'chord_color': 'suspended_tension',   'melody_register': +3, 'rest_prob': 0.1},
 }
 
 def apply_spike_chord_color(chord_notes, color_type):
@@ -81,24 +83,30 @@ def apply_spike_chord_color(chord_notes, color_type):
         # Replace 3rd with 2nd → ethereal calm
         if len(colored) > 1:
             colored[1] = colored[0] + 2
-    elif color_type == 'add_tritone':
-        # Add a tritone (#4) → anxious tension
-        colored.append(min(127, colored[0] + 6))
+    elif color_type == 'suspended_tension':
+        # Sus4: Replace 3rd with Perfect 4th → unresolved yearning without tritone harshness
+        # [Root, P4, P5] — the classic "something's about to happen" sound
+        colored = [colored[0], colored[0] + 5, colored[0] + 7]
     elif color_type == 'major_lift':
         # Force major triad → hopeful lift
         colored = [colored[0], min(127, colored[0] + 4), min(127, colored[0] + 7)]
-    elif color_type == 'resolve_root':
-        # Simplify to root + 5th → acceptance/resolution
-        colored = [colored[0], min(127, colored[0] + 7)]
+    elif color_type == 'picardy_lift':
+        # Picardy Third: Force MAJOR triad in a minor context.
+        # Open voicing: Root, P5, Major 3rd (octave up) for spacious cinematic feel.
+        # Melody dissonance guard auto-snaps to these notes — no clash possible.
+        colored = [colored[0], colored[0] + 7, colored[0] + 4 + 12]
     elif color_type == 'add_quiet_dissonance':
         # Add half-step above root → subtle disturbance
         colored.append(min(127, colored[0] + 1))
-    elif color_type == 'major_power':
-        # Major triad with doubled root octave below → courageous power
-        colored = [max(0, colored[0] - 12), colored[0], min(127, colored[0] + 4), min(127, colored[0] + 7)]
-    elif color_type == 'thick_minor':
-        # Minor triad with low octave root + minor 7th → despairing thickness
-        colored = [max(0, colored[0] - 12), colored[0], min(127, colored[0] + 3), min(127, colored[0] + 7), min(127, colored[0] + 10)]
+    elif color_type == 'epic_modal':
+        # Epic Modal: Open 5th power chord (Root + P5 + Root octave up)
+        # No 3rd = massive, emotionally ambiguous brass sound
+        colored = [colored[0], colored[0] + 7, colored[0] + 12]
+    elif color_type == 'hollow_madd9':
+        # Hollow Minor Add 9: Root + P5 + (minor 3rd + 9th clustered an octave up)
+        # The 9th (14 semitones) sits right next to minor 3rd (15 semitones)
+        # creating the painful "ache" rub. Open spacing = emptiness.
+        colored = [colored[0], colored[0] + 7, colored[0] + 14, colored[0] + 15]
     elif color_type == 'resolve_major':
         # Force major resolution → relief from tension
         colored = [colored[0], min(127, colored[0] + 4), min(127, colored[0] + 7)]
@@ -133,13 +141,15 @@ def resolve_dissonance(pitch, sounding_chord_notes):
 def get_mode_intervals(mode_name):
     # GREEK MODES (intervals relative to the root)
     modes = {
-        'lydian':     [0, 2, 4, 6, 7, 9, 11],
-        'ionian':     [0, 2, 4, 5, 7, 9, 11],
-        'mixolydian': [0, 2, 4, 5, 7, 9, 10],
-        'dorian':     [0, 2, 3, 5, 7, 9, 10],
-        'aeolian':    [0, 2, 3, 5, 7, 8, 10],
-        'phrygian':   [0, 1, 3, 5, 7, 8, 10],
-        'locrian':    [0, 1, 3, 5, 6, 8, 10]
+        'lydian':            [0, 2, 4, 6, 7, 9, 11],
+        'ionian':            [0, 2, 4, 5, 7, 9, 11],
+        'mixolydian':        [0, 2, 4, 5, 7, 9, 10],
+        'dorian':            [0, 2, 3, 5, 7, 9, 10],
+        'aeolian':           [0, 2, 3, 5, 7, 8, 10],
+        'phrygian':          [0, 1, 3, 5, 7, 8, 10],
+        'locrian':           [0, 1, 3, 5, 6, 8, 10],
+        'harmonic_minor':    [0, 2, 3, 5, 7, 8, 11],  # Augmented 2nd (♭6→M7) = gothic, eerie
+        'phrygian_dominant': [0, 1, 4, 5, 7, 8, 10],  # ♭2 + M3 = alien, extreme
     }
     return modes.get(mode_name, modes['ionian'])
 
@@ -225,11 +235,6 @@ def generate_midi_from_emotions(emotions_array, base_key_offset=0, filename="eeg
     consecutive_trill_count = 0      # Phase 3A: anti-trill tracker
     spike_duration_counter = 0       # Phase 5: short spike tracking
     active_spike_profile = None      # Phase 4: current spike profile
-    
-    # Phase 7: Fear State Machine
-    fear_submode = 'ambiguity'
-    fear_tick_counter = 0
-    fear_ramp_velocity = 35
 
     for t, p in enumerate(emotions_array):
         # Update emotion tracker
@@ -282,8 +287,12 @@ def generate_midi_from_emotions(emotions_array, base_key_offset=0, filename="eeg
         is_neutral = (emotion_cat == 'neutral')
         
         if emotion_cat == 'neutral':
-            current_mode = 'mixolydian'
-            chord_type = 'sus2'
+            # Chameleon: Dorian when leaning dark, Mixolydian when leaning bright
+            if secondary_label in ('sad', 'fear'):
+                current_mode = 'dorian'
+            else:
+                current_mode = 'mixolydian'
+            chord_type = 'cinematic_open'  # Triad + mode color note for distinct cinematic feel
         elif emotion_cat == 'happy':
             current_mode = 'lydian' if v > 0.75 else 'ionian'
             chord_type = "triad"
@@ -291,38 +300,20 @@ def generate_midi_from_emotions(emotions_array, base_key_offset=0, filename="eeg
             current_mode = 'aeolian'
             chord_type = "triad"
         else: # fear
-            if v > -0.2:
-                current_mode = 'dorian'
-                chord_type = "sus2"
-            elif v > -0.6:
-                current_mode = 'aeolian'
-                chord_type = "triad"
+            # All fear uses non-tertian voicings (no 3rd = no major/minor identity)
+            if v > -0.4:
+                current_mode = 'phrygian'        # ♭2 = brooding, oppressive, claustrophobic
+            elif v > -0.7:
+                current_mode = 'harmonic_minor'   # Augmented 2nd = gothic, eerie, Dracula
             else:
-                # Use locrian extremely rarely, stick to phrygian mostly
-                current_mode = 'phrygian' if v > -0.95 else 'locrian'
-                chord_type = "dim"
+                current_mode = 'phrygian_dominant' # ♭2 + M3 = alien, extreme, snake-charmer
+            chord_type = "fear_open"  # Root + P5 + 6th (non-tertian, avoids happy/sad territory)
 
         # Generate the pool of valid notes for the selected mode
         pool = get_mode_pool(current_mode, root_midi=(24 + base_key_offset), octaves=8)
 
-        # ── Neutral pentatonic restriction ──
-        if is_neutral:
-            # Use degrees 0, 1, 3, 4, 5 of the diatonic pool
-            # (skip the 3rd and 7th — remove modal "color" notes for ambiguity)
-            pentatonic_degrees = [0, 1, 3, 4, 5]
-            pentatonic_pool = []
-            intervals = get_mode_intervals(current_mode)
-            root = 24 + base_key_offset
-            for oct in range(8):
-                for deg in pentatonic_degrees:
-                    note = root + (oct * 12) + intervals[deg]
-                    if note <= 127:
-                        pentatonic_pool.append(note)
-            melody_pool = pentatonic_pool  # melody uses this restricted pool
-            register_shift = 0  # Neutral stays in natural register
-        else:
-            melody_pool = pool
-            register_shift = 0
+        melody_pool = pool
+        register_shift = 0
         
         # --------------------------------------------------------------------------
         # 2. DYNAMICS & TEMPO (Mapped to Arousal)
@@ -358,6 +349,9 @@ def generate_midi_from_emotions(emotions_array, base_key_offset=0, filename="eeg
         # Sad needs more presence (higher velocity)
         if macro_label == 'sad':
             velocity = max(50, min(110, velocity + 15))
+        # Neutral needs enough presence to feel emotionally engaged
+        if emotion_cat == 'neutral':
+            velocity = max(55, velocity)
 
         # Apply spike velocity modifier
         if active_spike_profile:
@@ -398,37 +392,15 @@ def generate_midi_from_emotions(emotions_array, base_key_offset=0, filename="eeg
         # Sad & Neutral chord variety: prevent boring repetition at slow tempos
         if emotion_cat in ('sad', 'neutral') and emotion_streak > 2:
             harmonic_rhythm = min(harmonic_rhythm, 2)  # Force chord change every 2 steps max
-        # Even more aggressive for neutral — never hold more than 3 steps
+        # Neutral: more chord movement — never hold more than 2 steps
         if emotion_cat == 'neutral':
-            harmonic_rhythm = min(harmonic_rhythm, 3)
+            harmonic_rhythm = min(harmonic_rhythm, 2)
+        # Fear: keep chords moving at a steady moderate pace
+        if emotion_cat == 'fear':
+            harmonic_rhythm = min(harmonic_rhythm, 2)
 
         # Advance chord via Markov dice roll
-        if emotion_cat == 'fear':
-            # Fear State Machine & chord override (eerie submodes)
-            if t == 0 or emotion_streak == 0 or prev_dominant_idx != 2:
-                # Initialize fear submode on entry to fear
-                fear_submode = random.choices(['ambiguity', 'eerie_melodic', 'climax'], weights=[65, 30, 5])[0]
-                fear_tick_counter = 0
-                fear_ramp_velocity = 35
-                current_chord_degree = 0
-
-            fear_tick_counter += 1
-            if fear_submode == 'eerie_melodic':
-                # Descending harmony (e.g. 0 -> 6 -> 5 -> 4)
-                if emotion_streak % harmonic_rhythm == 0:
-                    current_chord_degree = (current_chord_degree - 1) % 7
-            else:
-                # Ambiguity/Climax stays mostly on tonic or steps slightly
-                if emotion_streak % harmonic_rhythm == 0:
-                    matrix = CHORD_TRANSITIONS.get(emotion_cat, {})
-                    if current_chord_degree in matrix:
-                        options = matrix[current_chord_degree]['options']
-                        weights = matrix[current_chord_degree]['weights']
-                        current_chord_degree = random.choices(options, weights=weights, k=1)[0]
-                    else:
-                        current_chord_degree = 0
-                        
-        elif t == 0 or emotion_streak == 0:
+        if t == 0 or emotion_streak == 0:
             # On start or emotion shift, force a safe root
             current_chord_degree = 0
         elif emotion_streak % harmonic_rhythm == 0:
@@ -453,6 +425,22 @@ def generate_midi_from_emotions(emotions_array, base_key_offset=0, filename="eeg
             chord_notes = [pool[chord_root_idx], pool[chord_root_idx + 3], pool[chord_root_idx + 4]]
         elif chord_type == "dim":
             chord_notes = [pool[chord_root_idx], pool[chord_root_idx + 2], pool[chord_root_idx] + 6]
+        elif chord_type == "fear_open":
+            # Non-tertian: Root + P5 + 6th degree (skips the 3rd entirely)
+            # Avoids major/minor chord identity — sounds heavy, ambiguous, dread-inducing
+            # Phrygian: [root, P5, ♭6] creates semitone rub (B↔C). Harmonic Minor: exposes aug 2nd
+            chord_notes = [pool[chord_root_idx], pool[chord_root_idx + 4], pool[chord_root_idx + 5]]
+        elif chord_type == "cinematic_open":
+            # Cinematic modal: triad + mode signature note for distinct character
+            # Dorian: minor add6 (m3 + M6) — warm nostalgia, distinct from Aeolian sadness
+            # Mixolydian: major add9 (M3 + high 9th) — shimmering, distinct from Ionian happiness
+            if current_mode == 'dorian':
+                chord_notes = [pool[chord_root_idx], pool[chord_root_idx + 2],
+                               pool[chord_root_idx + 4], pool[chord_root_idx + 5]]
+            else:  # mixolydian
+                ninth = min(127, pool[chord_root_idx + 1] + 12)
+                chord_notes = [pool[chord_root_idx], pool[chord_root_idx + 2],
+                               pool[chord_root_idx + 4], ninth]
         else:
             chord_notes = [pool[chord_root_idx], pool[chord_root_idx + 2], pool[chord_root_idx + 4]]
 
@@ -468,6 +456,13 @@ def generate_midi_from_emotions(emotions_array, base_key_offset=0, filename="eeg
 
         # Apply spike chord coloring (only for sustained spikes, 3+ samples)
         if active_spike_profile and spike_duration_counter > 2:
+            # EPIC MODAL override: force heroic i→bVI→bVII cycle before coloring
+            if active_spike_profile.get('chord_color') == 'epic_modal':
+                epic_sequence = [0, 5, 6]  # i → bVI → bVII heroic loop
+                current_chord_degree = epic_sequence[emotion_streak % 3]
+                chord_root_idx = base_chord_pool_idx + current_chord_degree
+                # Rebuild chord from the forced epic degree
+                chord_notes = [pool[chord_root_idx], pool[chord_root_idx + 2], pool[chord_root_idx + 4]]
             chord_notes = apply_spike_chord_color(chord_notes, active_spike_profile['chord_color'])
 
         # Spike rest probability override for melody
@@ -504,61 +499,55 @@ def generate_midi_from_emotions(emotions_array, base_key_offset=0, filename="eeg
             chord_track.append(Message('note_off', note=third, velocity=0, time=0))
 
         elif emotion_cat == 'fear':
+            # Fear: heavy non-tertian voicing (Root + P5 + 6th) + sustain pedal
             chord_track.append(Message('control_change', control=64, value=127, time=0))
 
-            # Brings chords higher up to bridge the gap with the melody
-            root = max(0, int(chord_notes[0]) - 12) 
-            fifth_down = max(0, int(chord_notes[2]) - 12)
+            # Deep bass root with spread upper tension for cinematic horror voicing
+            fear_chord = list(chord_notes)
+            while fear_chord[0] > 48:  # Root in deep bass (below C3)
+                fear_chord[0] -= 12
+            fear_chord[1] = fear_chord[1] - 12 if fear_chord[1] > 69 else fear_chord[1]
+            fear_chord[2] = fear_chord[2] - 12 if fear_chord[2] > 69 else fear_chord[2]
+            vel = max(50, velocity)
 
-            # Route submode logic
-            if fear_submode == 'climax':
-                vel = 110 if random.random() < 0.2 else 0 # 20% chance of sudden stab
-                if vel > 0:
-                    minor_2nd = min(127, root + 1)
-                    chord_track.append(Message('note_on', note=root, velocity=vel, time=0))
-                    chord_track.append(Message('note_on', note=fifth_down, velocity=vel - 10, time=0))
-                    chord_track.append(Message('note_on', note=minor_2nd, velocity=vel - 10, time=0))
-                    chord_track.append(Message('note_off', note=root, velocity=0, time=int(ticks_per_step // 4)))
-                    chord_track.append(Message('note_off', note=fifth_down, velocity=0, time=0))
-                    chord_track.append(Message('note_off', note=minor_2nd, velocity=0, time=int(ticks_per_step - (ticks_per_step // 4))))
-                else:
-                    chord_track.append(Message('note_off', note=root, velocity=0, time=int(ticks_per_step)))
+            for n in fear_chord:
+                chord_track.append(Message('note_on', note=int(n), velocity=vel, time=0))
+
+            # RARE dissonance: ~5% chance of a quiet tritone or minor 2nd
+            if random.random() < 0.05:
+                dissonant_note = min(127, int(fear_chord[0]) + random.choice([1, 6]))
+                chord_track.append(Message('note_on', note=dissonant_note, velocity=max(10, vel // 4), time=0))
+                chord_track.append(Message('note_off', note=dissonant_note, velocity=0, time=int(ticks_per_step // 2)))
+                chord_track.append(Message('note_off', note=int(fear_chord[0]), velocity=0, time=int(ticks_per_step - (ticks_per_step // 2))))
             else:
-                # Ambiguity or Eerie Melodic
-                if fear_submode == 'ambiguity':
-                    # Ramp up slowly over 15 ticks
-                    if fear_tick_counter % 15 == 0:
-                        fear_ramp_velocity = 45 # Reset, increased base intensity
-                    else:
-                        fear_ramp_velocity += 4
-                    vel = min(100, fear_ramp_velocity)
-                else:
-                    vel = random.randint(55, 75) # Constant brooding, higher base
-
-                minor_2nd = min(127, root + 1)
-                chord_track.append(Message('note_on', note=root, velocity=vel, time=0))
-                if random.random() < 0.15:
-                    chord_track.append(Message('note_on', note=minor_2nd, velocity=max(10, vel // 3), time=0))
-                chord_track.append(Message('note_on', note=fifth_down, velocity=max(10, vel - 15), time=0))
-
-                chord_track.append(Message('note_off', note=root, velocity=0, time=int(ticks_per_step)))
-                chord_track.append(Message('note_off', note=minor_2nd, velocity=0, time=0))
-                chord_track.append(Message('note_off', note=fifth_down, velocity=0, time=0))
+                chord_track.append(Message('note_off', note=int(fear_chord[0]), velocity=0, time=int(ticks_per_step)))
+            for n in fear_chord[1:]:
+                chord_track.append(Message('note_off', note=int(n), velocity=0, time=0))
 
             chord_track.append(Message('control_change', control=64, value=0, time=0))
 
         elif emotion_cat == 'neutral':
-            # quartal_float (Diatonic): Stack 3 notes using pool indices to guarantee diatonic 4ths/3rds
-            idx = chord_root_idx
-            q1 = pool[idx]
-            q2 = pool[idx + 3] if (idx + 3) < len(pool) else pool[-1]
-            q3 = pool[idx + 6] if (idx + 6) < len(pool) else pool[-1]
+            # Open wide voicing for sad - happy balance and spaciousness 
+            # Same open spread as sad, but with warmer Dorian add6 / Mixolydian add9
+            root  = int(chord_notes[0])
+            third = int(chord_notes[1]) + 12   # 3rd up an octave for spacious spread
+            fifth = int(chord_notes[2]) - 12   # 5th down toward bass for depth
             
-            for n in [q1, q2, q3]:
+            has_color = len(chord_notes) > 3
+            if has_color:
+                color = int(chord_notes[3])        # Mode color note (M6 or 9th) stays natural
+
+            # MIDI range safety
+            fifth = fifth if fifth >= 0 else fifth + 12
+            third = third if third <= 127 else third - 12
+
+            voices = [root, fifth, color, third] if has_color else [root, fifth, third]
+            for n in voices:
                 chord_track.append(Message('note_on',  note=int(n), velocity=chord_vel, time=0))
-            chord_track.append(Message('note_off', note=int(q1),  velocity=0, time=int(ticks_per_step)))
-            chord_track.append(Message('note_off', note=int(q2), velocity=0, time=0))
-            chord_track.append(Message('note_off', note=int(q3), velocity=0, time=0))
+            chord_track.append(Message('note_off', note=root, velocity=0, time=int(ticks_per_step)))
+            upper_voices = [fifth, color, third] if has_color else [fifth, third]
+            for n in upper_voices:
+                chord_track.append(Message('note_off', note=int(n), velocity=0, time=0))
 
 
         # -------------------------------------------------------------------------
@@ -584,8 +573,8 @@ def generate_midi_from_emotions(emotions_array, base_key_offset=0, filename="eeg
             """Return index of note in pool p closest to target pitch."""
             return min(range(len(p)), key=lambda k: abs(p[k] - target))
 
-        # Fear skips motif replay — sparse and unpredictable
-        use_motif = len(motif_buffer) > 0 and random.random() < 0.40 and emotion_cat != 'fear'
+        # Fear CAN replay motifs — dark, repeating themes are scarier than randomness
+        use_motif = len(motif_buffer) > 0 and random.random() < 0.40
 
         if use_motif:
             # ── Replay motif transposed ±1-2 scale degrees ──
@@ -628,46 +617,44 @@ def generate_midi_from_emotions(emotions_array, base_key_offset=0, filename="eeg
             # Happy/Sad: higher floor to prevent dissonant clashes
             if emotion_cat in ('happy', 'sad'):
                 chord_adherence_prob = max(0.80, chord_adherence_prob)
-            # Neutral: lower adherence to reduce tonic repetition, but prefer non-root tones
+            # Neutral: strong adherence to expose the modal chord color (add6/add9)
             if emotion_cat == 'neutral':
-                chord_adherence_prob = min(0.55, chord_adherence_prob)
+                chord_adherence_prob = max(0.80, chord_adherence_prob)
+            # Fear: high adherence so melody follows the dark non-tertian chords
+            if emotion_cat == 'fear':
+                chord_adherence_prob = max(0.75, chord_adherence_prob)
 
             for i, duration in enumerate(chosen_rhythm):
+                if i < len(chosen_contour):
+                    melody_idx += chosen_contour[i]
+                    melody_idx  = max(21, min(len(active_pool) - 1, melody_idx))
+
+                # Fear: lower register (C3-C5 range) with descending bias
                 if emotion_cat == 'fear':
-                    # Sparse eerie right hand: mostly rests with occasional notes
-                    if random.random() < 0.55:
-                        melody_notes_and_durations.append((None, duration))
-                        new_motif.append((0, duration))
-                        continue
-                    # Bring melody register down to approach the chords (C4-C5 range)
-                    melody_idx = random.randint(28, min(len(active_pool) - 1, 36))
-                    note = int(active_pool[melody_idx])
-                    # Rare chromatic coloring for eeriness (sparing for musicality)
-                    if random.random() < 0.15:
-                        note += random.choice([-1, 1, 6, -6])
-                else:
-                    if i < len(chosen_contour):
-                        melody_idx += chosen_contour[i]
-                        melody_idx  = max(21, min(len(active_pool) - 1, melody_idx))
+                    melody_idx = max(14, min(len(active_pool) - 1, melody_idx))
+                    # Gentle descending bias: 30% chance to step down
+                    if random.random() < 0.30 and melody_idx > 16:
+                        melody_idx -= 1
 
-                    # Occasionally snap to a chord tone for harmonic grounding
-                    if random.random() < chord_adherence_prob:
-                        # Snap to safe triad tones only (Root, 3rd, 5th)
-                        safe_snap_notes = chord_notes[:3]
-                        # Neutral: prefer non-root tones to reduce tonic repetition
-                        if emotion_cat == 'neutral' and len(safe_snap_notes) > 1:
-                            safe_snap_notes = safe_snap_notes[1:]  # skip root
-                        target_note = random.choice(safe_snap_notes) + random.choice([12, 24])
-                        melody_idx  = _pool_idx_nearest(target_note, active_pool)
-                        melody_idx  = max(21, min(len(active_pool) - 1, melody_idx))
+                # Occasionally snap to a chord tone for harmonic grounding
+                if random.random() < chord_adherence_prob:
+                    # Snap to safe triad tones only (Root, 3rd, 5th)
+                    safe_snap_notes = chord_notes[:3]
+                    # Neutral: sometimes prefer non-root tones for melodic variety
+                    if emotion_cat == 'neutral' and len(safe_snap_notes) > 1 and random.random() < 0.4:
+                        safe_snap_notes = safe_snap_notes[1:]  # skip root occasionally
+                    target_note = random.choice(safe_snap_notes) + random.choice([12, 24])
+                    # Fear: snap to lower octave for darker register
+                    if emotion_cat == 'fear':
+                        target_note = random.choice(safe_snap_notes) + random.choice([0, 12])
+                    melody_idx  = _pool_idx_nearest(target_note, active_pool)
+                    melody_idx  = max(21, min(len(active_pool) - 1, melody_idx))
 
-                    note = int(active_pool[melody_idx]) + register_shift
+                note = int(active_pool[melody_idx]) + register_shift
 
-                    # Micro valence expression — ONLY for fear/neutral transitions
-                    if state['micro_v'] > 0.4 and random.random() < 0.35:
-                        note += 12  # Octave jump is always safe
-                    if emotion_cat == 'fear' and state['micro_v'] < -0.4 and random.random() < 0.25:
-                        note += random.choice([-1, 1])  # Chromatic only for fear
+                # Micro valence expression
+                if state['micro_v'] > 0.4 and random.random() < 0.35:
+                    note += 12  # Octave jump is always safe
 
                 # Apply spike melody register shift
                 if active_spike_profile and spike_duration_counter > 2:
@@ -685,8 +672,10 @@ def generate_midi_from_emotions(emotions_array, base_key_offset=0, filename="eeg
                 # Determine rest probability
                 if spike_rest_prob is not None:
                     should_rest = random.random() < spike_rest_prob
-                elif is_neutral and random.random() < 0.3:
-                    should_rest = True
+                elif is_neutral and random.random() < 0.10:
+                    should_rest = True  # Occasional breaths, not constant gaps
+                elif emotion_cat == 'fear' and random.random() < 0.15:
+                    should_rest = True  # Some breathing room, not emptiness
                 else:
                     should_rest = False
 
@@ -694,44 +683,43 @@ def generate_midi_from_emotions(emotions_array, base_key_offset=0, filename="eeg
                     melody_notes_and_durations.append((None, duration))
                 else:
                     # Universal Dissonance Guard
-                    if emotion_cat in ('happy', 'sad', 'neutral'):
+                    if emotion_cat in ('happy', 'sad', 'neutral', 'fear'):
                         note = resolve_dissonance(note, chord_notes)
                     melody_notes_and_durations.append((note, duration))
 
             # Save the new phrase to the motif buffer (replace old one)
             motif_buffer[:] = new_motif
 
-        # ── Anti-trill guard (applies to happy, sad, neutral) ──
+        # ── Anti-trill guard (applies to all emotions) ──
         # Rule: max 1 trill per 5 seconds — if ANY trill detected, replace immediately
-        if emotion_cat in ('happy', 'sad', 'neutral'):
-            if detect_trill(melody_notes_and_durations):
-                consecutive_trill_count += 1
-            else:
-                consecutive_trill_count = 0
-            # Trigger on the FIRST trill detection (was >= 2, now >= 1)
-            if consecutive_trill_count >= 1:
-                # Force non-trill: ascending arpeggio through chord tones
-                melody_notes_and_durations = []
-                for i_r, duration in enumerate(chosen_rhythm):
-                    ct_idx = i_r % len(chord_notes)
-                    note = int(chord_notes[ct_idx]) + 12
-                    while note > 84:
-                        note -= 12
-                    note = max(0, min(127, note))
-                    melody_notes_and_durations.append((note, duration))
-                consecutive_trill_count = 0
+        if detect_trill(melody_notes_and_durations):
+            consecutive_trill_count += 1
+        else:
+            consecutive_trill_count = 0
+        # Trigger on the FIRST trill detection
+        if consecutive_trill_count >= 1:
+            # Force non-trill: ascending arpeggio through chord tones
+            melody_notes_and_durations = []
+            for i_r, duration in enumerate(chosen_rhythm):
+                ct_idx = i_r % len(chord_notes)
+                note = int(chord_notes[ct_idx]) + 12
+                while note > 84:
+                    note -= 12
+                note = max(0, min(127, note))
+                melody_notes_and_durations.append((note, duration))
+            consecutive_trill_count = 0
 
         for note, duration in melody_notes_and_durations:
             if note is None:
                 melody_track.append(Message('note_off', note=0, velocity=0, time=int(duration)))
             else:
-                # Fear melody: separate velocity for eerie dynamics
+                # Fear melody: slightly lower velocity for brooding feel
                 if emotion_cat == 'fear':
-                    mel_vel = random.randint(90, 110) if random.random() < 0.12 else random.randint(55, 75)
+                    mel_vel = max(45, min(85, velocity - 5))
                 else:
                     mel_vel = velocity
                 melody_track.append(Message('note_on',  note=int(note), velocity=int(mel_vel), time=0))
                 melody_track.append(Message('note_off', note=int(note), velocity=0,              time=int(duration)))
 
     mid.save(filename)
-    print(f"🎵 Saved Final Cohesive MIDI: {filename}")
+    print(f"Saved Final Cohesive MIDI: {filename}")
