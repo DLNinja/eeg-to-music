@@ -65,6 +65,15 @@ class EmotionTracker:
         micro_v, micro_a = self.get_micro_state(self.v, self.a)
         is_spike = abs(micro_a) > self.spike_threshold or abs(micro_v) > self.spike_threshold
 
+        # Graduated spike intensity (0.0–1.0):
+        # How far the micro deviation exceeds the threshold, normalized.
+        # 0.0 = at threshold, 1.0 = max observed deviation (~0.8 above threshold)
+        max_micro_dev = max(abs(micro_a), abs(micro_v))
+        if is_spike:
+            spike_intensity = min(1.0, (max_micro_dev - self.spike_threshold) / 0.8)
+        else:
+            spike_intensity = 0.0
+
         return {
             "valence": self.v,
             "arousal": self.a,
@@ -73,6 +82,7 @@ class EmotionTracker:
             "micro_v": micro_v,
             "micro_a": micro_a,
             "is_spike": is_spike,
+            "spike_intensity": spike_intensity,
             "spike_label": self.LABEL_NAMES.get(self.current_label_idx, 'neutral'),
             "macro_label": self._classify_macro(macro_v, macro_a)
         }
