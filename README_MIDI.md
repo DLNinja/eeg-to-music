@@ -1,64 +1,41 @@
-# MIDI Generation Documentation
+# Piano Music Generator MVP - Technical Guide
 
-This project implements two distinct but harmonically aligned paths for generating music from EEG-derived emotion probabilities: **Pipeline (Offline) Generation** and **Real-time Synthesis**.
-
----
-
-## 1. Pipeline Generation (`midi_generator.py`)
-
-Used in the Pipeline View to generate `.mid` files from a full trial of classification results.
-
-### Core Steps:
-1.  **Metric Calculation**:
-    - **Dominant Emotion**: Index of the highest probability (`np.argmax`).
-    - **Intensity**: The raw probability of the dominant emotion.
-    - **Arousal**: Sum of 'Happy' and 'Fear' probabilities, used to drive tempo and velocity.
-2.  **Mode & Key Mapping**:
-    - Uses 8-octave parallel Greek modes (Ionian, Dorian, Phrygian, Lydian, Mixolydian, Aeolian, Locrian).
-    - Maps emotions to modes based on intensity (e.g., Happy/High → Lydian, Sad/Low → Aeolian).
-    - Ensures all modes share a fixed root (e.g., C2) for melodic cohesion.
-3.  **Rhythmic Engine**:
-    - Divides time into "Steps" (2 beats per classified second).
-    - Selects rhythmic patterns from three pools (Slow, Medium, Fast) based on Arousal.
-4.  **Accompaniment Logic**:
-    - **Happy**: Majestic sustained block chords.
-    - **Sad**: Cascading broken arpeggios (downward focused).
-    - **Fear**: Creeping/eerie long sustains on dissonant notes.
-    - **Neutral**: Soft, floating sustained block chords.
-5.  **Melody Random Walk**:
-    - Restricted to the current mode's diatonic pool.
-    - High **Harmonic Adherence**: 95% of notes in Happy mode are forced chord tones; 70% in others.
-6.  **Texturing (Optional)**:
-    - If EEG features are passed, maps bands (Delta..Gamma) to MIDI Control Change (CC) messages for Chorus, Reverb, Attack, and Brightness.
+This guide explains the core music generation logic implemented in `src/music/midi_generator.py`. The system translates EEG-derived emotion probabilities (Valence and Arousal) into professional-grade piano compositions using a blend of music theory, Markov chains, and dynamic state management.
 
 ---
 
-## 2. Real-time Generation (`realtime_generator.py`)
+## 1. Mode Selection (Emotional Color)
+The engine maps macro-emotional states to specific Greek modes to establish the "color" of the piece:
+- **Valence-Arousal Mapping**: 
+  - **Happy**: Ionian or Lydian (for high valence).
+  - **Sad**: Aeolian.
+  - **Fear**: Phrygian, Harmonic Minor, or Phrygian Dominant (depending on the depth of negative valence).
+  - **Neutral**: Operates as a "Chameleon" mode, locking into Dorian (sad-leaning) or Mixolydian (happy-leaning) based on the secondary dominant emotion.
+- **Diatonic Pools**: Each mode generates a restricted pool of valid MIDI notes (across 8 octaves) anchored to a shared root note, ensuring harmonic cohesion even during rapid emotional shifts.
 
-Used in the Real-time View to synthesize audio with low latency (1-second chunks) during live data streaming.
+## 2. Dynamics & Tempo (Energy and Intensity)
+Musical energy is directly driven by the **Arousal** metric:
+- **Dynamic BPM**: Scales between 60 and 140 BPM using an Exponential Moving Average (EMA) for smooth, natural tempo transitions.
+- **Rhythmic Density**: High arousal triggers faster subdivisions (16th notes, triplets), while low arousal favors sustained half-notes and whole-notes.
+- **Humanization**: Sad and Neutral modes include micro-timing jitter to simulate the subtle imperfections of a human pianist.
+- **Spike Modifiers**: Sudden emotional spikes (e.g., ANXIETY or RELIEF) apply immediate multipliers to tempo and velocity to highlight the micro-event.
 
-### Core Steps:
-1.  **FluidSynth lazy-initialization**: Starts the audio driver and loads the soundfont only when first used.
-2.  **1-Second Chunk Processing**:
-    - Pulls the latest classification result from a thread-safe update queue.
-    - Updates target BPM and note velocity via arousal smoothing.
-3.  **Stateful Music Engine**:
-    - Tracks "Emotion Streak" to avoid jarred transitions; only changes chord progression every 4 seconds or on major emotion shifts.
-4.  **Synchronized Playback**:
-    - Uses high-resolution `time.time()` tracking to prevent drift between chunks.
-    - Executes sequential accompaniment notes (arpeggios) using blocking sleeps within a dedicated thread.
-5.  **Alignment Fix**:
-    - **CC 11 over CC 1**: Uses Expression (CC 11) for texturing instead of Modulation (CC 1) to avoid unwanted LFO-vibrato on piano patches.
-    - **Attack Clamping**: Limits Attack (CC 73) to avoid muffled note-starts.
-6.  **UI Feedback Loop**:
-    - Emits Qt signals (`note_played`, `state_update`) to drive the Piano Roll and UI labels in real-time.
+## 3. Chords and Accompaniment (Harmonic Foundation)
+The harmonic progression is driven by a sophisticated state machine:
+- **Markov Transitions**: Relative scale degrees are selected using an emotion-specific transition matrix, ensuring logical and "musical" chord movements (e.g., I-IV-V in Happy, i-bII in Fear).
+- **Voicing Styles**: 
+  - **Happy**: Majestic block triads.
+  - **Sad**: Cascading rolled chords or "cascades" (downward focus).
+  - **Neutral**: Arpeggiated patterns with a split between deep bass and mid-range upper voices.
+  - **Fear**: Sustained non-tertian (quartal) voicings with added dissonant "ghost notes."
+- **Spike Coloring**: During spikes, chords are "colored" with specific intervals (e.g., adding a minor 3rd for "Bittersweet" transitions or using open power chords for "Courage").
+
+## 4. Melody Generation (Contour and Phrase)
+The melody provides the narrative thread of the music:
+- **VGMIDI Markov Engine**: Melodic intervals are generated using a Markov chain trained on video game music, ensuring natural-sounding contours rather than random walks.
+- **Motif Memory**: The engine maintains a short-term buffer to repeat and transpose previous phrases (40% probability), creating thematic consistency and "catchy" motifs.
+- **Harmonic Adherence**: A strict "Dissonance Guard" snaps melodic notes to the current chord tones (75-95% adherence) to prevent clashing, while allowing enough variety for modal expression.
+- **Register Management**: Automatically shifts the melody register based on intensity—lower for brooding Fear passages and higher for "Awakening" or "Hope" spikes.
 
 ---
-
-## Shared Music Theory Logic
-
-Both generators share the same fixed rules for:
-- **Mode Pool Generation**: `get_mode_pool`
-- **Chord Construction**: `get_chord`
-- **Progression Logic**: Mode-specific degree patterns (e.g., I-IV-V-vi for Ionian).
-- **Parallel Movement**: Always anchored to the same root MIDI note to ensure that even as the feeling changes, the harmonic resolution remains satisfying.
+*This guide summarizes the logic for the "Completed Piano Music Generator MVP".*

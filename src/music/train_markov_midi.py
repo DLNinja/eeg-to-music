@@ -34,8 +34,8 @@ OUTPUT_DIR   = os.path.join(PROJECT_ROOT, 'models', 'transitions')
 ANNO_FILES   = ['vgmidi_raw_1.json', 'vgmidi_raw_2.json']
 N_SAMPLES    = 32  # Each annotation has exactly 32 time-aligned V-A samples
 
-# Duration bins (in seconds) — coarse bucketing for Markov state
-DURATION_BINS = [0.125, 0.25, 0.5, 1.0, 2.0, 4.0]  # edges
+# Duration bins for Markov state (in seconds)
+DURATION_BINS = [0.125, 0.25, 0.5, 1.0, 2.0, 4.0]
 DURATION_LABELS = ['sixteenth', 'eighth', 'quarter', 'half', 'whole', 'long']
 
 # ─── Helpers ────────────────────────────────────────────────────────────────────
@@ -63,7 +63,7 @@ def get_quadrant(v, a):
         return 'sad'
     if v < 0 and a >= 0:
         return 'fear'
-    # v >= 0, a < 0 → serene/peaceful, map to neutral
+    # v >= 0, a < 0 →  map to neutral
     return 'neutral'
 
 def bin_duration(seconds):

@@ -13,7 +13,7 @@ class MarkovEngine:
         self.matrices = {}
         quadrants = ['happy', 'sad', 'fear', 'neutral']
         
-        # Absolute path resolution (assuming this script is in src/music)
+        # Absolute path
         base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
         full_models_dir = os.path.join(base_path, models_dir)
 
