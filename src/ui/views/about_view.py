@@ -36,8 +36,8 @@ class AboutView(QWidget):
         
         if os.path.exists(image_path):
             pixmap = QPixmap(image_path)
-            # Scale up the image to make it bigger and more legible
-            scaled_pixmap = pixmap.scaledToWidth(800, Qt.SmoothTransformation)
+            # Scale to a middle ground (450px) to balance size and clarity
+            scaled_pixmap = pixmap.scaledToWidth(450, Qt.SmoothTransformation)
             self.image_label.setPixmap(scaled_pixmap)
         else:
             self.image_label.setText(f"Image not found at:\n{image_path}")

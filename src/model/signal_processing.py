@@ -109,12 +109,13 @@ def filter_segment(segment, sos, zi):
         filtered: np.array (n_channels, n_samples) — filtered segment
         zi_out: updated filter state to pass into the next call
     """
-    n_ch = segment.shape[0]
-    filtered = np.zeros_like(segment)
-    zi_out = np.zeros_like(zi)
-    
-    for ch in range(n_ch):
-        filtered[ch], zi_out[ch] = sosfilt(sos, segment[ch], zi=zi[ch])
+    # use axis=1 to filter along samples for each channel concurrently
+    # zi must be transposed to (n_sections, n_channels, 2) for sosfilt with axis=1
+    # or we can iterate if the overhead is small, but axis=1 is usually faster.
+    # Actually, sosfilt with axis=1 Expects zi of shape (n_sections, n_channels, 2)
+    zi_in = np.transpose(zi, (1, 0, 2))
+    filtered, zi_out_transposed = sosfilt(sos, segment, axis=1, zi=zi_in)
+    zi_out = np.transpose(zi_out_transposed, (1, 0, 2))
     
     return filtered, zi_out
 
