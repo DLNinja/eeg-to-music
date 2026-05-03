@@ -260,7 +260,7 @@ LIGHT_PLOT_COLORS = {
     "label": QColor("#1e1e2e"),
 }
 
-from src.ui.views.about_view import AboutView
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -282,7 +282,6 @@ class MainWindow(QMainWindow):
         self.music_view = MusicView()
         self.realtime_view = RealTimeView()
         self.simulator_view = SimulatorView()
-        self.about_view = AboutView()
         
         # Add views to stack
         self.stacked_widget.addWidget(self.home_view)
@@ -291,7 +290,7 @@ class MainWindow(QMainWindow):
         self.stacked_widget.addWidget(self.music_view)
         self.stacked_widget.addWidget(self.realtime_view)
         self.stacked_widget.addWidget(self.simulator_view)
-        self.stacked_widget.addWidget(self.about_view)
+
         
         # Connect navigation signals
         self.home_view.navigate_to_plot_signal.connect(self.show_plot_view)
@@ -305,11 +304,6 @@ class MainWindow(QMainWindow):
         self.music_view.navigate_to_home_signal.connect(self.show_home_view)
         self.realtime_view.navigate_to_home_signal.connect(self.show_home_view)
         self.simulator_view.navigate_to_home_signal.connect(self.show_home_view)
-        self.home_view.navigate_to_about_signal.connect(self.show_about_view)
-        self.plot_view.navigate_to_home_signal.connect(self.show_home_view)
-        self.pipeline_view.navigate_to_home_signal.connect(self.show_home_view)
-        self.music_view.navigate_to_home_signal.connect(self.show_home_view)
-        self.about_view.navigate_to_home_signal.connect(self.show_home_view)
         
         # Show HomeView initially
         self.stacked_widget.setCurrentWidget(self.home_view)
@@ -396,8 +390,6 @@ class MainWindow(QMainWindow):
     def show_simulator_view(self):
         self.stacked_widget.setCurrentWidget(self.simulator_view)
         
-    def show_about_view(self):
-        self.stacked_widget.setCurrentWidget(self.about_view)
-        
+    
     def show_home_view(self):
         self.stacked_widget.setCurrentWidget(self.home_view)

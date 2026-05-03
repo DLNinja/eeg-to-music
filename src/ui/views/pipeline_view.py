@@ -524,11 +524,13 @@ class PipelineView(QWidget):
         
         main_layout.addLayout(controls_layout)
         
-        # Custom Plot Widgets (replacing matplotlib)
+        # Custom Plot Widgets (fixed heights — page scrolls vertically)
         self.eeg_plot = EegPlotWidget()
+        self.eeg_plot.setFixedHeight(350)
         main_layout.addWidget(self.eeg_plot)
         
         self.emotion_plot = EmotionPlotWidget()
+        self.emotion_plot.setFixedHeight(280)
         main_layout.addWidget(self.emotion_plot)
         
         # Horizontal Scrollbar for Time navigation

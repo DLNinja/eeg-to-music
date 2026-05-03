@@ -7,7 +7,7 @@ from queue import Queue
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, 
     QFileDialog, QPushButton, QGroupBox, QMessageBox, QFrame,
-    QRadioButton, QDoubleSpinBox, QScrollBar, QSpinBox
+    QRadioButton, QDoubleSpinBox, QScrollBar, QSpinBox, QScrollArea
 )
 from PyQt5.QtCore import pyqtSignal, Qt, QTimer, QThread, QObject
 
@@ -172,7 +172,17 @@ class RealTimeView(QWidget):
             print(f"Warning: Failed to load model: {e}")
     
     def _setup_ui(self):
-        main_layout = QVBoxLayout(self)
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.NoFrame)
+        root_layout.addWidget(self.scroll_area)
+
+        content_widget = QWidget()
+        self.scroll_area.setWidget(content_widget)
+        main_layout = QVBoxLayout(content_widget)
         
         # ── Top bar ──
         top_bar = QHBoxLayout()
@@ -318,19 +328,19 @@ class RealTimeView(QWidget):
         self.review_widget.setVisible(False)
         main_layout.addWidget(self.review_widget)
         
-        # ── Plots ──
+        # ── Plots (fixed heights — page scrolls vertically) ──
         self.eeg_plot = EegPlotWidget()
-        self.eeg_plot.setMinimumHeight(280)
-        main_layout.addWidget(self.eeg_plot, 1)
+        self.eeg_plot.setFixedHeight(350)
+        main_layout.addWidget(self.eeg_plot)
         
         self.emotion_plot = EmotionPlotWidget()
-        self.emotion_plot.setMinimumHeight(200)
-        main_layout.addWidget(self.emotion_plot, 1)
+        self.emotion_plot.setFixedHeight(280)
+        main_layout.addWidget(self.emotion_plot)
         
         # ── Piano Roll ──
         self.piano_roll = PianoRollWidget()
-        self.piano_roll.setMinimumHeight(200)
-        main_layout.addWidget(self.piano_roll, 2)
+        self.piano_roll.setFixedHeight(320)
+        main_layout.addWidget(self.piano_roll)
         
         self.time_scrollbar = QScrollBar(Qt.Horizontal)
         self.time_scrollbar.setMinimum(0)
@@ -503,7 +513,7 @@ class RealTimeView(QWidget):
             e_time = np.arange(n_segs)
             self.emotion_plot.set_data(
                 probs_arr, e_time,
-                max(0, e_time[-1] - 30),
+                0,
                 e_time[-1] + 1
             )
         

@@ -1,6 +1,15 @@
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox
-from PyQt5.QtCore import pyqtSignal, Qt
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QGridLayout
+from PyQt5.QtCore import pyqtSignal, Qt, QTimer
 from PyQt5.QtGui import QFont
+
+from src.ui.components.animated_buttons import (
+    AnimatedIconButton,
+    EegWaveCanvas,
+    PipelineCanvas,
+    MusicBarsCanvas,
+    CircumplexCanvas,
+    HeadsetCanvas,
+)
 
 class HomeView(QWidget):
     navigate_to_plot_signal = pyqtSignal()
@@ -9,12 +18,11 @@ class HomeView(QWidget):
     navigate_to_realtime_signal = pyqtSignal()
     navigate_to_simulator_signal = pyqtSignal()
     theme_changed_signal = pyqtSignal(str)  # "dark" or "light"
-    # Emit signal to request navigation to 'about' view
-    navigate_to_about_signal = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._setup_ui()
+        self._setup_animation_timer()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -37,76 +45,70 @@ class HomeView(QWidget):
 
         layout.addSpacing(40)
 
-        btn_font = QFont()
-        btn_font.setPointSize(12)
-
-        # Plotter button
-        self.plotter_btn = QPushButton("Go to EEG Signal Plotter")
-        self.plotter_btn.setMinimumSize(300, 60)
-        self.plotter_btn.setFont(btn_font)
+        # Animated icon buttons in a 2-column grid
+        button_layout = QGridLayout()
+        button_layout.setSpacing(20)
+        
+        self.plotter_btn = AnimatedIconButton("EEG Signal Plotter", EegWaveCanvas)
         self.plotter_btn.clicked.connect(self.navigate_to_plot_signal.emit)
-        layout.addWidget(self.plotter_btn, alignment=Qt.AlignCenter)
-        
-        layout.addSpacing(20)
-        
-        # Pipeline button
-        self.pipeline_btn = QPushButton("Go to Emotion Pipeline")
-        self.pipeline_btn.setMinimumSize(300, 60)
-        self.pipeline_btn.setFont(btn_font)
+        button_layout.addWidget(self.plotter_btn, 0, 0)
+
+        self.pipeline_btn = AnimatedIconButton("Emotion Pipeline", PipelineCanvas)
         self.pipeline_btn.clicked.connect(self.navigate_to_pipeline_signal.emit)
-        layout.addWidget(self.pipeline_btn, alignment=Qt.AlignCenter)
-        
-        layout.addSpacing(20)
-        
-        # Music button
-        self.music_btn = QPushButton("Music Player + Visualizer")
-        self.music_btn.setMinimumSize(300, 60)
-        self.music_btn.setFont(btn_font)
+        button_layout.addWidget(self.pipeline_btn, 0, 1)
+
+        self.music_btn = AnimatedIconButton("Music Player + Visualizer", MusicBarsCanvas)
         self.music_btn.clicked.connect(self.navigate_to_music_signal.emit)
-        layout.addWidget(self.music_btn, alignment=Qt.AlignCenter)
-        
-        layout.addSpacing(20)
-        
-        # Real-Time Classifier button
-        self.realtime_btn = QPushButton("Real-Time Emotion Classifier")
-        self.realtime_btn.setMinimumSize(300, 60)
-        self.realtime_btn.setFont(btn_font)
+        button_layout.addWidget(self.music_btn, 1, 0)
+
+        self.realtime_btn = AnimatedIconButton("Real-Time Emotion Classifier", CircumplexCanvas)
         self.realtime_btn.clicked.connect(self.navigate_to_realtime_signal.emit)
-        layout.addWidget(self.realtime_btn, alignment=Qt.AlignCenter)
-        
-        layout.addSpacing(20)
-        
-        # Simulator button
-        self.simulator_btn = QPushButton("Headset Simulator")
-        self.simulator_btn.setMinimumSize(300, 60)
-        self.simulator_btn.setFont(btn_font)
+        button_layout.addWidget(self.realtime_btn, 1, 1)
+
+        self.simulator_btn = AnimatedIconButton("Headset Simulator", HeadsetCanvas)
         self.simulator_btn.clicked.connect(self.navigate_to_simulator_signal.emit)
-        layout.addWidget(self.simulator_btn, alignment=Qt.AlignCenter)
-        
+        # Span the 5th button across both columns, centered
+        button_layout.addWidget(self.simulator_btn, 2, 0, 1, 2, alignment=Qt.AlignCenter)
+
+        layout.addLayout(button_layout)
         layout.addSpacing(40)
-        
+
         # Theme selector
         theme_bar = QHBoxLayout()
         theme_bar.setAlignment(Qt.AlignCenter)
-        
+
         theme_label = QLabel("Theme:")
         theme_label.setFont(QFont("Sans", 11))
         theme_bar.addWidget(theme_label)
-        
+
         self.theme_combo = QComboBox()
         self.theme_combo.addItems(["Dark", "Light"])
         self.theme_combo.setMinimumWidth(120)
         self.theme_combo.setFont(QFont("Sans", 11))
         self.theme_combo.currentTextChanged.connect(self._on_theme_changed)
         theme_bar.addWidget(self.theme_combo)
-        
+
         layout.addLayout(theme_bar)
-        # About button
-        self.about_btn = QPushButton("About Music Generation")
-        self.about_btn.setMinimumSize(300, 60)
-        self.about_btn.setFont(btn_font)
-        self.about_btn.clicked.connect(self.navigate_to_about_signal.emit)
-        layout.addWidget(self.about_btn, alignment=Qt.AlignCenter)
+
+    def _setup_animation_timer(self):
+        """Single 30 fps timer driving all animation canvases."""
+        self._anim_timer = QTimer(self)
+        self._anim_timer.setInterval(33)  # ~30 fps
+
+        # Collect all animated button canvases
+        self._canvases = [
+            self.plotter_btn.canvas,
+            self.pipeline_btn.canvas,
+            self.music_btn.canvas,
+            self.realtime_btn.canvas,
+            self.simulator_btn.canvas,
+        ]
+        self._anim_timer.timeout.connect(self._tick_animations)
+        self._anim_timer.start()
+
+    def _tick_animations(self):
+        for canvas in self._canvases:
+            canvas.advance()
 
     def _on_theme_changed(self, text):
         self.theme_changed_signal.emit(text.lower())
