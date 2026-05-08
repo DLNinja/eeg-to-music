@@ -9,7 +9,8 @@ from collections import deque
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, 
     QFileDialog, QPushButton, QGroupBox, QMessageBox, QFrame,
-    QRadioButton, QDoubleSpinBox, QScrollBar, QSpinBox, QLineEdit, QCheckBox
+    QRadioButton, QDoubleSpinBox, QScrollBar, QSpinBox, QLineEdit, QCheckBox,
+    QScrollArea
 )
 from PyQt5.QtCore import pyqtSignal, Qt, QTimer, QThread, QObject
 from PyQt5.QtGui import QIntValidator
@@ -21,6 +22,8 @@ from src.model.signal_processing import (
 )
 from src.model.emotion_classifier import EEGResNet
 from src.ui.views.pipeline_view import EegPlotWidget, EmotionPlotWidget
+from src.ui.components.piano_roll import PianoRollWidget
+from src.music.realtime_generator import RealTimeMusicSynthesizer
 
 # Default values (used as UI defaults, can be changed by user)
 DEFAULT_HOST = '127.0.0.1'
@@ -250,6 +253,12 @@ class SimulatorView(QWidget):
         
         self.stream_thread = None
         
+        # Music synthesizer
+        self.synth = RealTimeMusicSynthesizer()
+        self.synth.note_played.connect(self._on_note_played)
+        self.synth.state_update.connect(self._on_synth_state_update)
+        self.synth.start()
+        
         self._setup_ui()
     
     def _load_model(self):
@@ -262,7 +271,17 @@ class SimulatorView(QWidget):
             print(f"Warning: Failed to load model: {e}")
     
     def _setup_ui(self):
-        main_layout = QVBoxLayout(self)
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.NoFrame)
+        root_layout.addWidget(self.scroll_area)
+
+        content_widget = QWidget()
+        self.scroll_area.setWidget(content_widget)
+        main_layout = QVBoxLayout(content_widget)
         
         # ── Top bar ──
         top_bar = QHBoxLayout()
@@ -368,7 +387,15 @@ class SimulatorView(QWidget):
         
         self.detection_checkbox = QCheckBox("Enable Emotion Detection")
         self.detection_checkbox.setChecked(True)
+        self.detection_checkbox.toggled.connect(self._on_detection_toggled)
         controls_bar.addWidget(self.detection_checkbox)
+        
+        controls_bar.addSpacing(20)
+        
+        self.music_checkbox = QCheckBox("Enable Music Generation")
+        self.music_checkbox.setChecked(False)
+        self.music_checkbox.toggled.connect(self._on_music_toggled)
+        controls_bar.addWidget(self.music_checkbox)
         
         controls_bar.addSpacing(20)
         
@@ -378,6 +405,23 @@ class SimulatorView(QWidget):
         
         controls_bar.addStretch()
         main_layout.addLayout(controls_bar)
+        
+        # ── Music controls ──
+        music_bar = QHBoxLayout()
+        music_bar.addWidget(QLabel("🔈"))
+        self.vol_slider = QScrollBar(Qt.Horizontal)
+        self.vol_slider.setRange(0, 127)
+        self.vol_slider.setValue(100)
+        self.vol_slider.setFixedWidth(100)
+        self.vol_slider.valueChanged.connect(self._on_volume_changed)
+        music_bar.addWidget(self.vol_slider)
+
+        music_bar.addSpacing(20)
+        self.time_label = QLabel("00:00")
+        self.time_label.setStyleSheet("font-family: monospace; font-size: 14px;")
+        music_bar.addWidget(self.time_label)
+        music_bar.addStretch()
+        main_layout.addLayout(music_bar)
         
         # ── Channel selection ──
         ch_bar = QHBoxLayout()
@@ -442,14 +486,19 @@ class SimulatorView(QWidget):
         self.review_widget.setVisible(False)
         main_layout.addWidget(self.review_widget)
         
-        # ── Plots ──
+        # ── Plots (fixed heights — page scrolls vertically) ──
         self.eeg_plot = EegPlotWidget()
-        self.eeg_plot.setMinimumHeight(280)
-        main_layout.addWidget(self.eeg_plot, 1)
+        self.eeg_plot.setFixedHeight(350)
+        main_layout.addWidget(self.eeg_plot)
         
         self.emotion_plot = EmotionPlotWidget()
-        self.emotion_plot.setMinimumHeight(280)
-        main_layout.addWidget(self.emotion_plot, 1)
+        self.emotion_plot.setFixedHeight(280)
+        main_layout.addWidget(self.emotion_plot)
+        
+        # ── Piano Roll ──
+        self.piano_roll = PianoRollWidget()
+        self.piano_roll.setFixedHeight(320)
+        main_layout.addWidget(self.piano_roll)
         
         self.time_scrollbar = QScrollBar(Qt.Horizontal)
         self.time_scrollbar.setMinimum(0)
@@ -459,7 +508,41 @@ class SimulatorView(QWidget):
         
     def _on_back_clicked(self):
         self.stop_listening()
+        self.synth.pause()
+        self.synth.reset_state()
         self.navigate_to_home_signal.emit()
+
+    def _on_detection_toggled(self, checked):
+        """When emotion detection is off, music must also be off."""
+        if not checked:
+            self.music_checkbox.setChecked(False)
+            self.music_checkbox.setEnabled(False)
+        else:
+            self.music_checkbox.setEnabled(True)
+
+    def _on_music_toggled(self, checked):
+        if checked:
+            self.synth.play()
+        else:
+            self.synth.pause()
+            self.synth.reset_state()
+            self.piano_roll.clear_notes()
+
+    def _on_volume_changed(self, value):
+        self.synth.set_volume(value)
+
+    def _on_note_played(self, channel, pitch, velocity, start_time, duration):
+        total_s = max(60.0, self.total_samples_received / self.sf) if self.total_samples_received > 0 else 60.0
+        self.piano_roll.total_time = total_s
+        self.piano_roll.add_note(start_time, duration, pitch, velocity)
+        self.piano_roll.update_playhead(start_time)
+        # Update time label
+        mins = int(start_time // 60)
+        secs = int(start_time % 60)
+        self.time_label.setText(f"{mins:02d}:{secs:02d}")
+
+    def _on_synth_state_update(self, mode, chord_type, bpm):
+        pass
 
     # ── Channel helpers ──────────────────────────────────
     
@@ -523,6 +606,12 @@ class SimulatorView(QWidget):
         self.emotion_plot.set_data(
             np.zeros((1, 4)), np.array([0]), 0, 1
         )
+        self.piano_roll.clear_notes()
+        self.time_label.setText("00:00")
+        
+        # Reset music state
+        self.synth.pause()
+        self.synth.reset_state()
         
         # Hide review mode if active
         self.review_mode = False
@@ -584,6 +673,10 @@ class SimulatorView(QWidget):
         
         self.stream_thread.start()
         self.ui_timer.start(33) # ~30 fps
+        
+        # Start music if enabled
+        if self.music_checkbox.isChecked():
+            self.synth.play()
 
     def stop_listening(self, wait_worker=False):
         self.is_connected = False
@@ -603,6 +696,9 @@ class SimulatorView(QWidget):
         self.status_lbl.setText("Status: Disconnected")
         self.start_btn.setText("Start Listening")
         self.settings_group.setEnabled(True)
+        
+        # Pause music on disconnect (but keep piano roll visible for review)
+        self.synth.pause()
 
     def on_new_data(self, data):
         # Thread-safely push data into pending list
@@ -779,13 +875,18 @@ class SimulatorView(QWidget):
     def _on_classification_result(self, features, probs):
         self.emotion_probs.append(probs)
         
+        # Send to music synthesizer if enabled
+        if self.music_checkbox.isChecked():
+            timestamp = len(self.emotion_probs) - 1  # 1-second segments
+            self.synth.update_emotion(probs, timestamp)
+        
         n_segs = len(self.emotion_probs)
         if n_segs > 0:
             probs_arr = np.array(self.emotion_probs)
             e_time = np.arange(n_segs)
             
-            # Show last 30 segments (30 seconds)
-            view_start = max(0, e_time[-1] - 30)
+            # Show full timeline from the beginning
+            view_start = 0
             view_end = e_time[-1] + 1
             
             self.emotion_plot.set_data(
