@@ -54,6 +54,7 @@ class RealTimeMusicSynthesizer(QThread):
         self.force_snap = False
         self.dynamic_key_set = (base_key_offset != 0)
         self.fundamental_bass_root = 36 + self.base_key_offset
+        self.motif_buffer = []  # last generated 3-4 note pattern (matches MIDI generator)
         
         # Active notes to turn off cleanly
         self.active_chord_notes = []
@@ -170,6 +171,7 @@ class RealTimeMusicSynthesizer(QThread):
             self.fear_tick_counter = 0
             self.fear_ramp_velocity = 35
             self.neutral_locked_mode = None
+            self.motif_buffer = []
             self._all_notes_off()
 
     def stop(self):
@@ -202,12 +204,12 @@ class RealTimeMusicSynthesizer(QThread):
         # -> 1s for the first EEG window
         # -> 1s for user-requested lag
         # -> 0.2s for processing headroom.
-        playback_clock = time.time() + 2.2
+        playback_clock = time.time() + 1.5
         
         while self.is_running:
             if not self.is_playing:
                 time.sleep(0.01)
-                playback_clock = time.time() + 2.2
+                playback_clock = time.time() + 1.5
                 continue
             
             if self.synth is None:
@@ -300,13 +302,13 @@ class RealTimeMusicSynthesizer(QThread):
             self.emotion_streak += 1
         else:
             self.emotion_streak = 0
-            # Clear interval buffer and force a melodic anchor on emotion shift
+            # Clear motif buffer and interval history on emotion shift
+            self.motif_buffer = []
             self.prev_melody_intervals = [0, 0, 0]
             self.force_snap = True
             
         if is_spike:
-            # Spikes also reset momentum to prevent wildly dissonant leaps 
-            # from mismatched state matrices.
+            self.motif_buffer = []
             self.prev_melody_intervals = [0, 0, 0]
             self.force_snap = True
             
@@ -558,6 +560,14 @@ class RealTimeMusicSynthesizer(QThread):
             spike_rest_prob = None
 
         # ── 7. SCHEDULE NOTES ──
+        # Legato crossfade constants:
+        #   LEGATO_EARLY: start each chord 50ms before the clock boundary (smooth attack overlap)
+        #   LEGATO_LATE:  negative — release the chord 60ms BEFORE the boundary (= t+0.93)
+        #                 This ensures the old note-off fires BEFORE the next chunk's early note-on
+        #                 at t+0.95, preventing a same-pitch noteoff from killing the new note.
+        LEGATO_EARLY = 0.05
+        LEGATO_LATE  = -0.06  # note-off at chunk_start + 0.99 - 0.06 = chunk_start + 0.93
+
         with QMutexLocker(self.mutex):
 
             # ── Fear sustain pedal management ──
@@ -588,8 +598,8 @@ class RealTimeMusicSynthesizer(QThread):
                 # Register cap: keep happy chords warm, not tense (max C4 = 72)
                 chord_notes = [n - 12 if n > 72 else n for n in chord_notes]
                 for n in chord_notes:
-                    self.note_queue.append((chunk_start_time,        0, int(n), chord_vel, 1.0, True,  eeg_timestamp))
-                    self.note_queue.append((chunk_start_time + 0.99, 0, int(n), 0,         0,   False, eeg_timestamp + 0.99))
+                    self.note_queue.append((chunk_start_time - LEGATO_EARLY, 0, int(n), chord_vel, 1.0, True,  eeg_timestamp))
+                    self.note_queue.append((chunk_start_time + 0.99 + LEGATO_LATE, 0, int(n), 0, 0, False, eeg_timestamp + 0.99))
 
             elif emotion_cat == 'sad':
                 # open_wide (Diatonic): Root + 3rd (octave up) + 5th (octave down if possible)
@@ -606,17 +616,17 @@ class RealTimeMusicSynthesizer(QThread):
                     roll_gap_sec = 0.03  # ~30ms between each note entry
                     for vi, n in enumerate(roll_voices):
                         vel_taper = max(30, chord_vel - (vi * 3))
-                        t_on = chunk_start_time + (vi * roll_gap_sec)
+                        t_on = chunk_start_time - LEGATO_EARLY + (vi * roll_gap_sec)
                         self.note_queue.append((t_on, 0, int(n), vel_taper, 1.0, True, eeg_timestamp + (vi * roll_gap_sec)))
                     
                     # All notes off together at end
                     for n in roll_voices:
-                        self.note_queue.append((chunk_start_time + 0.99, 0, int(n), 0, 0, False, eeg_timestamp + 0.99))
+                        self.note_queue.append((chunk_start_time + 0.99 + LEGATO_LATE, 0, int(n), 0, 0, False, eeg_timestamp + 0.99))
                 else:
                     # Standard full block chord
                     for n in [root, fifth, third]:
-                        self.note_queue.append((chunk_start_time, 0, n, chord_vel, 1.0, True, eeg_timestamp))
-                        self.note_queue.append((chunk_start_time + 0.99, 0, n, 0, 0, False, eeg_timestamp + 0.99))
+                        self.note_queue.append((chunk_start_time - LEGATO_EARLY, 0, n, chord_vel, 1.0, True, eeg_timestamp))
+                        self.note_queue.append((chunk_start_time + 0.99 + LEGATO_LATE, 0, n, 0, 0, False, eeg_timestamp + 0.99))
 
             elif emotion_cat == 'neutral':
                 # C418 Minecraft voicing (Sweden / Danny):
@@ -655,25 +665,25 @@ class RealTimeMusicSynthesizer(QThread):
                     arp_gap_sec = 0.08  # ~80ms gap
                     
                     # Bass note (first, soft)
-                    self.note_queue.append((chunk_start_time, 0, int(bass), bass_vel, 1.0, True, eeg_timestamp))
+                    self.note_queue.append((chunk_start_time - LEGATO_EARLY, 0, int(bass), bass_vel, 1.0, True, eeg_timestamp))
                     # Third (after gap)
-                    self.note_queue.append((chunk_start_time + arp_gap_sec, 0, int(third), upper_vel, 1.0 - arp_gap_sec, True, eeg_timestamp + arp_gap_sec))
+                    self.note_queue.append((chunk_start_time - LEGATO_EARLY + arp_gap_sec, 0, int(third), upper_vel, 1.0 - arp_gap_sec, True, eeg_timestamp + arp_gap_sec))
                     # Fifth (after another gap)
-                    self.note_queue.append((chunk_start_time + arp_gap_sec * 2, 0, int(fifth), max(25, upper_vel - 3), 1.0 - arp_gap_sec * 2, True, eeg_timestamp + arp_gap_sec * 2))
+                    self.note_queue.append((chunk_start_time - LEGATO_EARLY + arp_gap_sec * 2, 0, int(fifth), max(25, upper_vel - 3), 1.0 - arp_gap_sec * 2, True, eeg_timestamp + arp_gap_sec * 2))
                     
                     # All notes off together at end of step
-                    self.note_queue.append((chunk_start_time + 0.99, 0, int(bass), 0, 0, False, eeg_timestamp + 0.99))
-                    self.note_queue.append((chunk_start_time + 0.99, 0, int(third), 0, 0, False, eeg_timestamp + 0.99))
-                    self.note_queue.append((chunk_start_time + 0.99, 0, int(fifth), 0, 0, False, eeg_timestamp + 0.99))
+                    self.note_queue.append((chunk_start_time + 0.99 + LEGATO_LATE, 0, int(bass),  0, 0, False, eeg_timestamp + 0.99))
+                    self.note_queue.append((chunk_start_time + 0.99 + LEGATO_LATE, 0, int(third), 0, 0, False, eeg_timestamp + 0.99))
+                    self.note_queue.append((chunk_start_time + 0.99 + LEGATO_LATE, 0, int(fifth), 0, 0, False, eeg_timestamp + 0.99))
                 else:
                     # Full block chord (standard ~90%)
-                    self.note_queue.append((chunk_start_time, 0, int(bass), bass_vel, 1.0, True, eeg_timestamp))
-                    self.note_queue.append((chunk_start_time, 0, int(third), upper_vel, 1.0, True, eeg_timestamp))
-                    self.note_queue.append((chunk_start_time, 0, int(fifth), max(25, upper_vel - 3), 1.0, True, eeg_timestamp))
+                    self.note_queue.append((chunk_start_time - LEGATO_EARLY, 0, int(bass),  bass_vel, 1.0, True, eeg_timestamp))
+                    self.note_queue.append((chunk_start_time - LEGATO_EARLY, 0, int(third), upper_vel, 1.0, True, eeg_timestamp))
+                    self.note_queue.append((chunk_start_time - LEGATO_EARLY, 0, int(fifth), max(25, upper_vel - 3), 1.0, True, eeg_timestamp))
                     
-                    self.note_queue.append((chunk_start_time + 0.99, 0, int(bass), 0, 0, False, eeg_timestamp + 0.99))
-                    self.note_queue.append((chunk_start_time + 0.99, 0, int(third), 0, 0, False, eeg_timestamp + 0.99))
-                    self.note_queue.append((chunk_start_time + 0.99, 0, int(fifth), 0, 0, False, eeg_timestamp + 0.99))
+                    self.note_queue.append((chunk_start_time + 0.99 + LEGATO_LATE, 0, int(bass),  0, 0, False, eeg_timestamp + 0.99))
+                    self.note_queue.append((chunk_start_time + 0.99 + LEGATO_LATE, 0, int(third), 0, 0, False, eeg_timestamp + 0.99))
+                    self.note_queue.append((chunk_start_time + 0.99 + LEGATO_LATE, 0, int(fifth), 0, 0, False, eeg_timestamp + 0.99))
 
             elif emotion_cat == 'fear':
                 # Fear: heavy non-tertian voicing (Root + P5 + 6th)
@@ -685,14 +695,22 @@ class RealTimeMusicSynthesizer(QThread):
                 vel = min(110, max(50, velocity + micro_chord_boost))
 
                 for n in fear_chord:
-                    self.note_queue.append((chunk_start_time, 0, int(n), vel, 1.0, True, eeg_timestamp))
-                    self.note_queue.append((chunk_start_time + 0.99, 0, int(n), 0, 0, False, eeg_timestamp + 0.99))
+                    self.note_queue.append((chunk_start_time - LEGATO_EARLY, 0, int(n), vel, 1.0, True, eeg_timestamp))
+                    self.note_queue.append((chunk_start_time + 0.99 + LEGATO_LATE, 0, int(n), 0, 0, False, eeg_timestamp + 0.99))
 
                 # RARE dissonance: ~5% chance of a quiet tritone or minor 2nd
                 if random.random() < 0.05:
                     dissonant_note = min(127, int(fear_chord[0]) + random.choice([1, 6]))
-                    self.note_queue.append((chunk_start_time, 0, dissonant_note, max(10, vel // 4), 0.5, True, eeg_timestamp))
-                    self.note_queue.append((chunk_start_time + 0.5, 0, dissonant_note, 0, 0, False, eeg_timestamp + 0.5))
+                    self.note_queue.append((chunk_start_time - LEGATO_EARLY, 0, dissonant_note, max(10, vel // 4), 0.5, True, eeg_timestamp))
+                    self.note_queue.append((chunk_start_time - LEGATO_EARLY + 0.5, 0, dissonant_note, 0, 0, False, eeg_timestamp + 0.5))
+
+            # ── UNEASE spike: drop bass octave, add quiet half-step ghost note (matches MIDI generator) ──
+            if self.active_spike_profile and self.active_spike_profile.get('name') == 'UNEASE' and spike_intensity > 0.5:
+                ghost_root = chord_notes[0] - 12 if chord_notes[0] > 36 else chord_notes[0]
+                ghost_note = min(127, ghost_root + 1)
+                ghost_vel = max(15, int(chord_vel * 0.25))
+                self.note_queue.append((chunk_start_time - LEGATO_EARLY, 0, int(ghost_note), ghost_vel, 0.5, True, eeg_timestamp))
+                self.note_queue.append((chunk_start_time - LEGATO_EARLY + 0.5, 0, int(ghost_note), 0, 0, False, eeg_timestamp + 0.5))
 
 
             # ── Melody (MACRO for harmonic adherence, MICRO for expression) ──
@@ -707,96 +725,154 @@ class RealTimeMusicSynthesizer(QThread):
                 for idx in range(len(active_pool)):
                     if (idx % 7) == 6:
                         active_pool[idx] += 1
-            for r_frac in chosen_ratios:
-                dur_sec = float(r_frac) * sec_per_beat * 2
-                if time_offset + dur_sec > 1.0:
-                    dur_sec = 1.0 - time_offset
-                if dur_sec < 0.01:
-                    break
 
-                # Harmonic adherence
-                chord_adherence_prob = 0.7 + (macro_v * 0.2) + (micro_v * 0.1)
-                chord_adherence_prob = max(0.15, min(0.95, chord_adherence_prob))
+            def _pool_idx_nearest(target, p):
+                return min(range(len(p)), key=lambda k: abs(p[k] - target))
+
+            # 40% chance: replay saved motif (transposed ±1-2 scale degrees)
+            # 60% chance: generate a fresh Markov contour phrase and save it
+            use_motif = len(self.motif_buffer) > 0 and random.random() < 0.40
+
+            if use_motif:
+                shift = random.choice([-2, -1, 1, 2])
+                for deg_offset, r_frac in self.motif_buffer:
+                    dur_sec = float(r_frac) * sec_per_beat * 2
+                    if time_offset + dur_sec > 1.0:
+                        dur_sec = 1.0 - time_offset
+                    if dur_sec < 0.01:
+                        break
+
+                    new_deg = self.melody_idx + deg_offset + shift
+                    new_deg = max(21, min(len(active_pool) - 1, new_deg))
+                    note = int(active_pool[new_deg])
+
+                    if self.active_spike_profile and spike_intensity > 0.3:
+                        note += int(self.active_spike_profile['melody_register'] * min(1.0, spike_intensity))
+                    while note > 84:
+                        note -= 12
+                    note = max(0, min(127, note))
+
+                    if emotion_cat in ('happy', 'sad', 'neutral'):
+                        note = resolve_dissonance(note, chord_notes)
+
+                    if spike_rest_prob is not None:
+                        is_rest = random.random() < spike_rest_prob
+                    elif is_neutral and random.random() < 0.10:
+                        is_rest = True
+                    elif emotion_cat == 'fear' and random.random() < 0.15:
+                        is_rest = True
+                    else:
+                        is_rest = False
+
+                    if not is_rest:
+                        mel_vel = max(45, min(85, velocity - 5)) if emotion_cat == 'fear' else int(velocity)
+                        t_on  = chunk_start_time + time_offset
+                        t_off = t_on + (dur_sec * 0.99)
+                        e_ts  = eeg_timestamp + time_offset
+                        self.note_queue.append((t_on,  1, int(note), mel_vel, dur_sec, True,  e_ts))
+                        self.note_queue.append((t_off, 1, int(note), 0,       0,       False, e_ts + dur_sec * 0.99))
+                        melody_notes_for_trill.append((int(note), dur_sec))
+                    time_offset += dur_sec
+
+            else:
+                # Generate a fresh musical phrase using VGMIDI Markov Chain
+                chosen_contour = []
+                prev_intervals = [0, 0, 0]
+                for _ in range(len(chosen_ratios)):
+                    next_interval = self.markov_engine.query_next_interval(emotion_cat, prev_intervals)
+                    chosen_contour.append(next_interval)
+                    prev_intervals.pop(0)
+                    prev_intervals.append(next_interval)
+
+                new_motif = []
+
+                chord_adherence_prob = max(0.4, min(0.95, 0.7 + (macro_v * 0.20) + (micro_v * 0.10)))
                 if emotion_cat in ('happy', 'sad'):
                     chord_adherence_prob = max(0.80, chord_adherence_prob)
                 if emotion_cat == 'neutral':
                     chord_adherence_prob = max(0.80, chord_adherence_prob)
                 if emotion_cat == 'fear':
                     chord_adherence_prob = max(0.75, chord_adherence_prob)
-
-                if self.force_snap or random.random() < chord_adherence_prob:
-                    # Ground the melody to chord tones
-                    safe_snap_notes = chord_notes[:3]
-                    if emotion_cat == 'neutral' and len(safe_snap_notes) > 1 and random.random() < 0.4:
-                        safe_snap_notes = safe_snap_notes[1:]  # skip root occasionally
-                    target_note = random.choice(safe_snap_notes) + random.choice([12, 24])
-                    # Fear: snap to lower octave for darker register
-                    if emotion_cat == 'fear':
-                        target_note = random.choice(safe_snap_notes) + random.choice([0, 12])
-                    note = int(target_note)
-                    try:
-                        self.melody_idx = min(range(len(active_pool)), key=lambda k: abs(active_pool[k] - note))
-                    except Exception:
-                        pass
-                    if self.force_snap:
-                        self.force_snap = False
-                else:
-                    step = self.markov_engine.query_next_interval(emotion_cat, self.prev_melody_intervals)
-                    self.prev_melody_intervals.pop(0)
-                    self.prev_melody_intervals.append(step)
-                    self.melody_idx += step
-                    self.melody_idx = max(21, min(len(active_pool)-1, self.melody_idx))
-                    note = int(active_pool[self.melody_idx])
-
-                # Fear: lower register with descending bias
-                if emotion_cat == 'fear':
-                    self.melody_idx = max(14, min(len(active_pool) - 1, self.melody_idx))
-                    if random.random() < 0.30 and self.melody_idx > 16:
-                        self.melody_idx -= 1
-                    note = int(active_pool[self.melody_idx])
-
-                # Micro valence expression
-                if micro_v > 0.4 and random.random() < 0.35:
-                    note += 12
-
-                # Apply spike melody register shift (graduated)
                 if self.active_spike_profile and spike_intensity > 0.3:
-                    note += int(self.active_spike_profile['melody_register'] * min(1.0, spike_intensity))
+                    chord_adherence_prob = max(0.90, chord_adherence_prob)
+                if self.force_snap:
+                    chord_adherence_prob = 1.0
+                    self.force_snap = False
 
-                # Cap super high notes
-                while note > 84:
-                    note -= 12
-                note = max(0, min(127, note))
+                for i, r_frac in enumerate(chosen_ratios):
+                    dur_sec = float(r_frac) * sec_per_beat * 2
+                    if time_offset + dur_sec > 1.0:
+                        dur_sec = 1.0 - time_offset
+                    if dur_sec < 0.01:
+                        break
 
-                # Universal Dissonance Guard
-                if emotion_cat in ('happy', 'sad', 'neutral', 'fear'):
-                    note = resolve_dissonance(note, chord_notes)
+                    if i < len(chosen_contour):
+                        self.melody_idx += chosen_contour[i]
+                        self.melody_idx = max(21, min(len(active_pool) - 1, self.melody_idx))
 
-                # Determine rest probability
-                if spike_rest_prob is not None:
-                    is_rest = random.random() < spike_rest_prob
-                elif is_neutral and random.random() < 0.10:
-                    is_rest = True  # Occasional breaths, not constant gaps
-                elif emotion_cat == 'fear' and random.random() < 0.15:
-                    is_rest = True
-                else:
-                    is_rest = False
-
-                if not is_rest:
-                    # Fear melody: slightly lower velocity for brooding feel
+                    # FEAR: lower register (C3-C5 range) with descending bias
                     if emotion_cat == 'fear':
-                        mel_vel = max(45, min(85, velocity - 5))
+                        self.melody_idx = max(14, min(len(active_pool) - 1, self.melody_idx))
+                        if random.random() < 0.30 and self.melody_idx > 16:
+                            self.melody_idx -= 1
+
+                    # Snap to a chord tone for harmonic grounding
+                    if random.random() < chord_adherence_prob:
+                        safe_snap_notes = chord_notes[:3]
+                        if emotion_cat == 'neutral' and len(safe_snap_notes) > 1 and random.random() < 0.4:
+                            safe_snap_notes = safe_snap_notes[1:]
+                        target_note = random.choice(safe_snap_notes) + random.choice([12, 24])
+                        if emotion_cat == 'fear':
+                            target_note = random.choice(safe_snap_notes) + random.choice([0, 12])
+                        self.melody_idx = _pool_idx_nearest(target_note, active_pool)
+                        self.melody_idx = max(21, min(len(active_pool) - 1, self.melody_idx))
+
+                    note = int(active_pool[self.melody_idx])
+
+                    # Micro valence expression
+                    if micro_v > 0.4 and random.random() < 0.35:
+                        note += 12  # Octave jump
+
+                    # Apply spike melody register shift
+                    if self.active_spike_profile and spike_intensity > 0.3:
+                        note += int(self.active_spike_profile['melody_register'] * min(1.0, spike_intensity))
+
+                    while note > 84:
+                        note -= 12
+                    note = max(0, min(127, note))
+
+                    # Motifs are recorded as scale degree offsets paired with rhythm ratios
+                    new_motif.append((chosen_contour[i] if i < len(chosen_contour) else 0, r_frac))
+
+                    # Rest probabilities
+                    if spike_rest_prob is not None:
+                        is_rest = random.random() < spike_rest_prob
+                    elif is_neutral and random.random() < 0.10:
+                        is_rest = True
+                    elif emotion_cat == 'fear' and random.random() < 0.15:
+                        is_rest = True
                     else:
-                        mel_vel = int(velocity)
+                        is_rest = False
 
-                    t_on  = chunk_start_time + time_offset
-                    t_off = t_on + (dur_sec * 0.99)
-                    e_ts  = eeg_timestamp + time_offset
-                    self.note_queue.append((t_on,  1, int(note), mel_vel, dur_sec, True,  e_ts))
-                    self.note_queue.append((t_off, 1, int(note), 0,             0,       False, e_ts + dur_sec * 0.99))
-                    melody_notes_for_trill.append((int(note), dur_sec))
+                    if not is_rest:
+                        # Universal Dissonance Guard
+                        if emotion_cat in ('happy', 'sad', 'neutral', 'fear'):
+                            note = resolve_dissonance(note, chord_notes)
+                        if emotion_cat == 'fear':
+                            mel_vel = max(45, min(85, velocity - 5))
+                        else:
+                            mel_vel = int(velocity)
+                        t_on  = chunk_start_time + time_offset
+                        t_off = t_on + (dur_sec * 0.99)
+                        e_ts  = eeg_timestamp + time_offset
+                        self.note_queue.append((t_on,  1, int(note), mel_vel, dur_sec, True,  e_ts))
+                        self.note_queue.append((t_off, 1, int(note), 0,       0,       False, e_ts + dur_sec * 0.99))
+                        melody_notes_for_trill.append((int(note), dur_sec))
 
-                time_offset += dur_sec
+                    time_offset += dur_sec
+
+                # Save the new phrase to the motif buffer (replace old one)
+                self.motif_buffer = new_motif
 
             # ── Anti-trill guard (applies to all emotions) ──
             if len(melody_notes_for_trill) >= 4:
@@ -805,5 +881,6 @@ class RealTimeMusicSynthesizer(QThread):
                 else:
                     self.consecutive_trill_count = 0
                 if self.consecutive_trill_count >= 1:
+                    # On trill: force snap to chord tone on next chunk's melody
                     self.force_snap = True
                     self.consecutive_trill_count = 0
