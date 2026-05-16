@@ -73,6 +73,20 @@ class RealTimeMusicSynthesizer(QThread):
         self.markov_engine = MarkovEngine()
         self.prev_melody_interval = 0
         self.synth = None
+        
+        # EEG band powers (updated each second from the classification worker)
+        self.current_band_powers = {
+            'delta': 0.3, 'theta': 0.3, 'alpha': 0.5,
+            'beta': 0.4,  'gamma': 0.2
+        }
+        
+        # Rolling history for band power trend detection (last 5 seconds)
+        from collections import deque
+        self.band_history = {
+            'alpha': deque(maxlen=5), 'beta': deque(maxlen=5),
+            'theta': deque(maxlen=5), 'delta': deque(maxlen=5),
+            'gamma': deque(maxlen=5),
+        }
 
         # Phase 3A: Anti-trill tracker
         self.consecutive_trill_count = 0
@@ -130,12 +144,16 @@ class RealTimeMusicSynthesizer(QThread):
             print(f"[RealTimeSynth] Error: Failed to initialize FluidSynth: {e}")
             self.synth = None
 
-    def update_emotion(self, probs, timestamp):
+    def update_emotion(self, probs, timestamp, band_powers=None):
         with QMutexLocker(self.mutex):
             # Update the continuous V-A tracker
             dominant_idx = int(np.argmax(probs))
             confidence = float(probs[dominant_idx])
             self.tracker.update_from_discrete(dominant_idx, confidence)
+            
+            # Store latest band powers for use in chunk generation
+            if band_powers is not None:
+                self.current_band_powers = band_powers
             
             self.update_queue.append((probs, timestamp))
 
@@ -390,6 +408,184 @@ class RealTimeMusicSynthesizer(QThread):
         alpha = 0.3 + 0.5 * min(1.0, abs(micro_a))  # 0.3 (smooth) → 0.8 (abrupt)
         self.current_bpm = (1.0 - alpha) * self.current_bpm + alpha * target_bpm
         sec_per_beat = 60.0 / self.current_bpm
+
+        # ── EEG BAND POWERS: SOUND-ENGINEER LAYER ──
+        # Band powers are read once per chunk and mapped ONLY to MIDI CC
+        # (timbral/spatial effects). They do NOT change notes, rhythm, tempo,
+        # harmony, or velocity — only how those notes *sound*.
+        #
+        # Research basis:
+        #  • Alpha → Reverb (CC 91): High alpha = relaxed, internally focused
+        #    state. Psychoacoustics research (Moeck et al., 2009; Bregman 1990)
+        #    links perceived spaciousness/reverb with reduced cortical arousal.
+        #    Mapping alpha power to reverb depth makes calm brain states sound
+        #    more open and enveloping — matching the subjective sense of
+        #    "expanded inner space" during alpha dominance.
+        #
+        #  • Theta → Chorus/Detune (CC 93): Theta is the signature of creative,
+        #    loosely focused states (Klimesch 1999; Limb & Braun 2008). Chorus
+        #    (slight pitch detuning between voices) creates the shimmering,
+        #    dream-like quality that matches the hypnagogic theta character.
+        #
+        #  • Beta → Brightness/Filter (CC 74): Beta is the active-thinking,
+        #    motor-engagement band. High-frequency spectral content (brightness)
+        #    is processed with higher right-hemisphere cortical activation
+        #    (Nih.gov, timbre perception studies). A bright, open filter
+        #    reflects the alert, engaged quality of beta states.
+        #
+        #  • Delta → Tremolo depth (CC 92): Delta in waking EEG indicates
+        #    fatigue/mental exhaustion (Borghini et al. 2014). Tremolo — slow
+        #    amplitude modulation — adds a heavy, laboured quality that
+        #    perceptually mirrors cognitive sluggishness.
+        #
+        #  • Gamma → Modulation/Vibrato (CC 1): Gamma reflects perceptual
+        #    binding and peak-focus (Dietrich & Kanso 2010). Subtle vibrato
+        #    (pitch modulation) adds a singing, "alive" quality to notes,
+        #    matching the heightened sensory clarity of gamma states.
+        with QMutexLocker(self.mutex):
+            bp = dict(self.current_band_powers)
+            
+        def get_mean_pow(band_name, default=0.5):
+            """Get absolute band power normalized to [0, 1] via calibrated sigmoid.
+            
+            Uses abs_mean (log2-scaled, independent per band). The sigmoid is
+            centered at 15 (empirical midpoint from full SEED dataset, 152K windows)
+            with slope 0.3, mapping the typical range (8-27) to ~0.1-0.95.
+            Extreme outliers saturate naturally to 0 or 1.
+            """
+            val = bp.get(band_name, default)
+            if isinstance(val, dict):
+                raw = val.get('abs_mean', val.get('mean', default))
+                # Sigmoid: center=15 (dataset midpoint), k=0.3 (gentle slope)
+                return float(1.0 / (1.0 + np.exp(-0.3 * (raw - 15))))
+            return val
+
+        alpha_pow = get_mean_pow('alpha', 0.5)
+        beta_pow  = get_mean_pow('beta',  0.4)
+        theta_pow = get_mean_pow('theta', 0.3)
+        delta_pow = get_mean_pow('delta', 0.3)
+        gamma_pow = get_mean_pow('gamma', 0.2)
+
+        # --- Track band power history and compute trends ---
+        for bname, bval in [('alpha', alpha_pow), ('beta', beta_pow),
+                            ('theta', theta_pow), ('delta', delta_pow),
+                            ('gamma', gamma_pow)]:
+            self.band_history[bname].append(bval)
+        
+        def get_trend(band_name):
+            """Compute rate of change: positive = rising, negative = falling."""
+            h = self.band_history[band_name]
+            if len(h) < 3:
+                return 0.0
+            recent = np.mean(list(h)[-2:])
+            older  = np.mean(list(h)[:2])
+            return float(recent - older)
+        
+        alpha_trend = get_trend('alpha')
+        beta_trend  = get_trend('beta')
+        delta_trend = get_trend('delta')
+
+        for ch in [0, 1]:
+            # 1. Contextual Brightness (CC 74) & Reverb (CC 91)
+            if emotion_cat == 'happy':
+                if alpha_pow > 0.5:  # Contentment/Cozy (Conflicting arousal)
+                    bright_val = 40 + beta_pow * 30
+                    reverb_val = 60 + alpha_pow * 60
+                else:                # Excitement (Aligned arousal)
+                    bright_val = 80 + beta_pow * 47
+                    reverb_val = max(0, 50 - beta_pow * 50)  # Close/intimate
+            elif emotion_cat == 'fear':
+                if beta_pow > 0.5:   # Hyper-vigilance/Panic
+                    bright_val = 90 + beta_pow * 37
+                    reverb_val = 20 + alpha_pow * 40
+                else:                # Paralyzed Dread
+                    bright_val = 30 + beta_pow * 40
+                    reverb_val = 40 + alpha_pow * 60
+            elif emotion_cat == 'sad':
+                if beta_pow > 0.5:   # Anxious Rumination
+                    bright_val = 60 + beta_pow * 40
+                else:                # Lethargic Depression
+                    bright_val = 30 + beta_pow * 30
+                reverb_val = 40 + alpha_pow * 80
+            else: # neutral
+                bright_val = 50 + beta_pow * 60
+                reverb_val = 40 + alpha_pow * 80
+
+            # 7. Trend Modifiers — react to direction of change, not just level
+            # Alpha rising → drifting off → gradually expand reverb
+            # Alpha falling → waking up → tighten reverb
+            reverb_val += alpha_trend * 40
+            # Beta rising → getting alert → progressively brighten
+            # Beta falling → losing focus → gradually muffle
+            bright_val += beta_trend * 25
+
+            # 2. Contextual Chorus (CC 93)
+            if emotion_cat == 'fear':
+                chorus_val = 30 + theta_pow * 90  # Nightmare state, disorienting
+            elif emotion_cat == 'neutral':
+                chorus_val = theta_pow * 100      # Floaty/wandering mind
+            else:
+                chorus_val = theta_pow * 60       # Subtle shimmer
+
+            # 3. Contextual Vibrato (CC 1)
+            if emotion_cat == 'happy':
+                vibrato_val = gamma_pow * 100     # Peak joy/expressive
+            elif emotion_cat == 'fear':
+                vibrato_val = 20 + gamma_pow * 80 # Piercing/nervous
+            else:
+                vibrato_val = gamma_pow * 60
+
+            # 4. Contextual Tremolo (CC 92)
+            if emotion_cat in ['sad', 'fear']:
+                tremolo_val = 20 + delta_pow * 80 # Exhausted struggling
+            elif emotion_cat == 'happy':
+                tremolo_val = delta_pow * 50      # Afterglow/tired but happy
+            else:
+                tremolo_val = delta_pow * 60
+            # Delta rising → fatigue setting in → deepen tremolo
+            tremolo_val += delta_trend * 50
+
+            # 5. Frontal Alpha Asymmetry -> Spatial & Character Mapping (CC 10, 93, 91)
+            # asymmetry = ln(R) - ln(L). Positive = Approach/Engagement.
+            asymmetry = bp.get('asymmetry', 0.0)
+            
+            # Pan (CC 10): 64 is center. FAA > 0 (Approach) -> Pan Left (<64).
+            pan_val = 64 - np.clip(asymmetry * 20, -32, 32)
+            
+            # Dynamic Width & Distance:
+            if asymmetry > 0.1: # Strong Approach (Engagement)
+                # Tighter, closer sound: Moderate chorus boost for shimmer
+                chorus_mod = asymmetry * 25
+                reverb_mod = -asymmetry * 20 # Bring sound "closer"
+            elif asymmetry < -0.1: # Strong Withdrawal (Avoidance)
+                # Wide, diffuse, alienated sound: Strong chorus for detuning + more reverb for distance
+                chorus_mod = abs(asymmetry) * 55
+                reverb_mod = abs(asymmetry) * 35 # Push sound "away"
+            else:
+                chorus_mod = 0
+                reverb_mod = 0
+                
+            final_chorus = chorus_val + chorus_mod
+            final_reverb = reverb_val + reverb_mod
+
+            # 6. Neural EQ (Resonance CC 71) & Neural Compression (Expression CC 11)
+            # EQ: Sharpen the spectral profile during high-focus Gamma states
+            res_val = 30 + gamma_pow * 70 
+            
+            # Compression Emulation: Map Beta/Gamma energy to signal density (Expression)
+            # High energy = "Squashed" high gain (100-127), Low energy = "Breathing" (60-100)
+            engagement_energy = (beta_pow + gamma_pow) / 2.0
+            expression_val = 70 + engagement_energy * 57
+
+            # Apply safe clamping (0-127) and send to Synth
+            self.synth.cc(ch, 74, int(max(0, min(127, bright_val))))
+            self.synth.cc(ch, 91, int(max(0, min(127, final_reverb))))
+            self.synth.cc(ch, 93, int(max(0, min(127, final_chorus))))
+            self.synth.cc(ch, 1,  int(max(0, min(127, vibrato_val))))
+            self.synth.cc(ch, 92, int(max(0, min(127, tremolo_val))))
+            self.synth.cc(ch, 10, int(max(0, min(127, pan_val))))
+            self.synth.cc(ch, 71, int(max(0, min(127, res_val))))
+            self.synth.cc(ch, 11, int(max(0, min(127, expression_val))))
 
         # ── 4. VELOCITY (MACRO BASE + MICRO INTENSITY BOOST) ──
         # Base from MACRO arousal (30–110), boosted by MICRO arousal magnitude.

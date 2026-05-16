@@ -18,7 +18,8 @@ from PyQt5.QtGui import QIntValidator
 from src.model.signal_processing import (
     sf, n_channels, bands,
     create_bandpass_filter, filter_segment,
-    extract_single_window_features, smooth_features, moving_average
+    extract_single_window_features, smooth_features, moving_average,
+    extract_band_powers
 )
 from src.model.emotion_classifier import EEGResNet
 from src.ui.views.pipeline_view import EegPlotWidget, EmotionPlotWidget
@@ -130,7 +131,7 @@ class DataStreamThread(QThread):
 
 class ClassificationWorker(QObject):
     """Runs filter → features → smooth → classify in a background thread."""
-    result_ready = pyqtSignal(object, object)  # (features_62x5, probs_4)
+    result_ready = pyqtSignal(object, object, object)  # (features_62x5, probs_4, band_powers)
     
     def __init__(self, sos, zi_template, model, stft_n, sample_rate):
         super().__init__()
@@ -194,7 +195,8 @@ class ClassificationWorker(QObject):
         else:
             probs = np.array([0.25, 0.25, 0.25, 0.25])
         
-        self.result_ready.emit(features, probs)
+        band_powers = extract_band_powers(filtered, self.sf)
+        self.result_ready.emit(features, probs, band_powers)
 
 
 # ──────────────────────────────────────────────────────
@@ -872,13 +874,13 @@ class SimulatorView(QWidget):
 
     # ── Worker callbacks (main thread) ───────────────────
     
-    def _on_classification_result(self, features, probs):
+    def _on_classification_result(self, features, probs, band_powers):
         self.emotion_probs.append(probs)
         
         # Send to music synthesizer if enabled
         if self.music_checkbox.isChecked():
             timestamp = len(self.emotion_probs) - 1  # 1-second segments
-            self.synth.update_emotion(probs, timestamp)
+            self.synth.update_emotion(probs, timestamp, band_powers)
         
         n_segs = len(self.emotion_probs)
         if n_segs > 0:

@@ -14,11 +14,12 @@ from PyQt5.QtCore import pyqtSignal, Qt, QTimer, QThread, QObject
 from src.model.signal_processing import (
     sf, n_channels, bands,
     create_bandpass_filter, filter_segment,
-    extract_single_window_features, smooth_features, moving_average
+    analyze_eeg_segment, smooth_features, moving_average
 )
 from src.model.emotion_classifier import EEGResNet
 from src.ui.views.pipeline_view import EegPlotWidget, EmotionPlotWidget
 from src.ui.components.piano_roll import PianoRollWidget
+from src.ui.components.topomap_widget import MultiBandTopomapWidget
 from src.music.realtime_generator import RealTimeMusicSynthesizer
 
 
@@ -28,7 +29,7 @@ from src.music.realtime_generator import RealTimeMusicSynthesizer
 
 class ClassificationWorker(QObject):
     """Runs filter → features → smooth → classify in a background thread."""
-    result_ready = pyqtSignal(object, object, float)  # (features_62x5, probs_4, timestamp)
+    result_ready = pyqtSignal(object, object, float, object)  # (features_62x5, probs_4, timestamp, band_powers)
     all_done = pyqtSignal()  # emitted when queue is drained after finish signal
     
     def __init__(self, sos, zi_template, model, stft_n, sample_rate):
@@ -82,7 +83,10 @@ class ClassificationWorker(QObject):
     
     def _process(self, segment, timestamp):
         filtered, self.filter_zi = filter_segment(segment, self.sos, self.filter_zi)
-        features = extract_single_window_features(filtered, self.stft_n, self.sf)
+        
+        # Single FFT pass: DE features + band powers + FAA
+        features, band_powers = analyze_eeg_segment(filtered, self.stft_n, self.sf)
+        
         self.raw_features.append(features)
         if len(self.raw_features) > 20: # Limit history
             self.raw_features.pop(0)
@@ -100,7 +104,7 @@ class ClassificationWorker(QObject):
         else:
             probs = np.array([0.25, 0.25, 0.25, 0.25])
         
-        self.result_ready.emit(features, probs, timestamp)
+        self.result_ready.emit(features, probs, timestamp, band_powers)
 
 
 # ──────────────────────────────────────────────────────
@@ -240,6 +244,11 @@ class RealTimeView(QWidget):
         
         self.status_label = QLabel("Load a .mat file and select a trial to begin.")
         self.status_label.setStyleSheet("font-size: 12px; padding: 4px;")
+        
+        self.faa_label = QLabel("Frontal Asymmetry: 0.00 (Neutral)")
+        self.faa_label.setStyleSheet("color: #444; font-weight: bold; margin-top: 5px;")
+        controls_bar.addWidget(self.faa_label)
+        
         controls_bar.addWidget(self.status_label)
         
         main_layout.addLayout(controls_bar)
@@ -336,6 +345,11 @@ class RealTimeView(QWidget):
         self.emotion_plot = EmotionPlotWidget()
         self.emotion_plot.setFixedHeight(280)
         main_layout.addWidget(self.emotion_plot)
+        
+        # ── Topomaps ──
+        self.topomap_widget = MultiBandTopomapWidget()
+        self.topomap_widget.setFixedHeight(160)
+        main_layout.addWidget(self.topomap_widget)
         
         # ── Piano Roll ──
         self.piano_roll = PianoRollWidget()
@@ -499,11 +513,21 @@ class RealTimeView(QWidget):
     
     # ── Worker callbacks (main thread) ───────────────────
     
-    def _on_classification_result(self, features, probs, timestamp):
+    def _on_classification_result(self, features, probs, timestamp, band_powers):
         self.emotion_probs.append(probs)
         
-        # Send to synthesizer
-        self.synth.update_emotion(probs, timestamp)
+        # Send to synthesizer (with band powers for EEG texturing)
+        self.synth.update_emotion(probs, timestamp, band_powers)
+        
+        # Update topomaps
+        if (self.is_playing or self.waiting_for_worker):
+            self.topomap_widget.update_bands(band_powers)
+            
+            # Update FAA Asymmetry Indicator
+            asymmetry = band_powers.get('asymmetry', 0.0)
+            direction = "Approach (Left Dominance)" if asymmetry > 0 else "Withdrawal (Right Dominance)"
+            if abs(asymmetry) < 0.05: direction = "Balanced"
+            self.faa_label.setText(f"Frontal Asymmetry: {asymmetry:+.2f} | {direction}")
         
         n_segs = len(self.emotion_probs)
         

@@ -120,8 +120,13 @@ def filter_segment(segment, sos, zi):
     return filtered, zi_out
 
 
-def extract_single_window_features(filtered_segment, stft_n=256, fs=200):
-    """Extract DE features from one already-filtered 1-second segment.
+def analyze_eeg_segment(filtered_segment, stft_n=256, fs=200):
+    """Unified spectral analysis: DE features + band powers from a single FFT.
+    
+    Performs ONE FFT pass and derives both:
+    1. Differential Entropy (DE) features for classification
+    2. Relative band powers for music texturing and topomaps
+    3. Frontal Alpha Asymmetry (FAA) for spatial sonification
     
     Args:
         filtered_segment: shape (n_channels, window_len) — already bandpass-filtered
@@ -129,7 +134,9 @@ def extract_single_window_features(filtered_segment, stft_n=256, fs=200):
         fs: sampling frequency
     
     Returns:
-        features: shape (n_channels, n_bands) — DE features for this window
+        tuple: (de_features, band_powers)
+            - de_features: shape (n_channels, n_bands)
+            - band_powers: dict with 'delta'...'gamma' (each {'mean', 'channels'}) + 'asymmetry'
     """
     band_starts = np.array([v[0] for v in bands.values()])
     band_ends   = np.array([v[1] for v in bands.values()])
@@ -145,11 +152,56 @@ def extract_single_window_features(filtered_segment, stft_n=256, fs=200):
     fft_data = fft(windowed, n=stft_n, axis=1)
     mag_sq = np.abs(fft_data[:, :stft_n // 2]) ** 2
     
-    features = np.zeros((n_ch, n_bands))
+    # Total power per channel (for relative power normalization)
+    total_pow = mag_sq.sum(axis=1) + 1e-12
+    
+    de_features = np.zeros((n_ch, n_bands))
+    band_powers = {}
+    band_name_list = list(bands.keys())
+    
     for b in range(n_bands):
         low = f_start_idx[b]
         high = f_end_idx[b]
-        band_energy = mag_sq[:, low:high+1].mean(axis=1)
-        features[:, b] = np.log2(100 * band_energy + 1e-12)
+        band_mag = mag_sq[:, low:high+1]
+        
+        # DE features: log of mean band energy
+        band_energy = band_mag.mean(axis=1)
+        de_features[:, b] = np.log2(100 * band_energy + 1e-12)
+        
+        # Relative band power: sum of band energy / total energy per channel
+        band_sum = band_mag.sum(axis=1)
+        rel_pow_channels = band_sum / total_pow
+        
+        # Absolute band power: log-scaled, independent of other bands
+        # This prevents a strong Alpha from masking genuine Theta activations
+        abs_pow_mean = float(np.log2(band_energy.mean() + 1e-12))
+        
+        band_powers[band_name_list[b]] = {
+            'mean': float(rel_pow_channels.mean()),      # relative (sums to ~1)
+            'abs_mean': abs_pow_mean,                      # absolute (independent)
+            'channels': rel_pow_channels                   # per-channel relative (for topomaps)
+        }
     
+    # --- Frontal Alpha Asymmetry (FAA) ---
+    # SEED-62 Frontal Indices (International 10-20):
+    # Left: FP1(0), AF3(3), F7(5), F3(7)
+    # Right: FP2(2), AF4(4), F8(13), F4(11)
+    if 'alpha' in band_powers:
+        alpha_channels = band_powers['alpha']['channels']
+        left_alpha = np.mean(alpha_channels[[0, 3, 5, 7]]) + 1e-12
+        right_alpha = np.mean(alpha_channels[[2, 4, 13, 11]]) + 1e-12
+        band_powers['asymmetry'] = float(np.log(right_alpha) - np.log(left_alpha))
+    else:
+        band_powers['asymmetry'] = 0.0
+    
+    return de_features, band_powers
+
+
+# Legacy wrappers (for any other callers)
+def extract_single_window_features(filtered_segment, stft_n=256, fs=200):
+    features, _ = analyze_eeg_segment(filtered_segment, stft_n, fs)
     return features
+
+def extract_band_powers(filtered_segment, fs=200):
+    _, bp = analyze_eeg_segment(filtered_segment, fs=fs)
+    return bp
