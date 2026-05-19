@@ -29,15 +29,15 @@ from src.music.realtime_generator import RealTimeMusicSynthesizer
 
 # Default values (used as UI defaults, can be changed by user)
 DEFAULT_HOST = '127.0.0.1'
-DEFAULT_PORT = 65432
-DEFAULT_CHANNELS = 62
-DEFAULT_SAMPLE_RATE = 200
+DEFAULT_PORT = 8888
+DEFAULT_CHANNELS = 64
+DEFAULT_SAMPLE_RATE = 256
 
-# BioSemi ADC resolution: 1 bit = 31.25 nV = 0.00003125 µV
-# So 1 µV = 1 / 0.00003125 = 32000 bits
-DEFAULT_UV_TO_BITS = 32000
+# BioSemi ADC resolution: 1 bit = 31.25 nV = 0.03125 µV
+# So 1 µV = 1 / 0.03125 = 32000 bits
+DEFAULT_UV_TO_BITS = 32
 DEFAULT_BYTES_PER_SAMPLE = 3  # 24-bit samples
-DEFAULT_SAMPLES_PER_PACKET = 16  # BioSemi sends multiple samples per TCP packet
+DEFAULT_SAMPLES_PER_PACKET = 2  # BioSemi sends multiple samples per TCP packet
 
 # ──────────────────────────────────────────────────────
 # Data Stream Thread
@@ -59,11 +59,11 @@ class DataStreamThread(QThread):
         self.port = port
         self.channels = channels
         self.bytes_per_sample = bytes_per_sample
-        self.uv_to_bits = uv_to_bits
         self.samples_per_packet = samples_per_packet
         self.packet_size = channels * bytes_per_sample * samples_per_packet
         self.running = False
         self.sock = None
+        self.bits_to_uv = 0.03125
 
     def recvall(self, n):
         data = bytearray()
@@ -91,7 +91,9 @@ class DataStreamThread(QThread):
 
         while self.running:
             try:
-                raw_data = self.recvall(self.packet_size)
+                #raw_data = self.recvall(self.packet_size)
+                raw_data = self.sock.recv(self.packet_size)
+
                 if not self.running:
                     break
                     
@@ -107,9 +109,9 @@ class DataStreamThread(QThread):
                     values = []
                     for ch in range(self.channels):
                         offset = sample_offset + ch * self.bytes_per_sample
-                        sample_bytes = raw_data[offset:offset + self.bytes_per_sample]
+                        sample_bytes = raw_data[offset: offset + self.bytes_per_sample]
                         raw_int = int.from_bytes(sample_bytes, byteorder='little', signed=True)
-                        uv_value = raw_int / self.uv_to_bits
+                        uv_value = float(raw_int)  * self.bits_to_uv
                         values.append(uv_value)
                     all_samples.append(values)
                 self.new_data_signal.emit(all_samples)
