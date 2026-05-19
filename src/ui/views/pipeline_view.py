@@ -400,6 +400,7 @@ class PipelineView(QWidget):
         try:
             self.model = EEGResNet(num_classes=4) 
             checkpoint = torch.load("models/best_model_stft_smooth.pt", map_location=torch.device('cpu'))
+            #checkpoint = torch.load("models/best_model_modified.pt", map_location=torch.device('cpu'))
             self.model.load_state_dict(checkpoint["model_state"])
             self.model.eval()
         except Exception as e:

@@ -1,9 +1,11 @@
 import os
 import sys
+import math
 import numpy as np
 import torch
 import socket
 import struct
+import scipy.signal
 from queue import Queue
 from collections import deque
 from PyQt5.QtWidgets import (
@@ -31,11 +33,11 @@ DEFAULT_PORT = 65432
 DEFAULT_CHANNELS = 62
 DEFAULT_SAMPLE_RATE = 200
 
-# BioSemi protocol defaults
 # BioSemi ADC resolution: 1 bit = 31.25 nV = 0.00003125 µV
 # So 1 µV = 1 / 0.00003125 = 32000 bits
 DEFAULT_UV_TO_BITS = 32000
 DEFAULT_BYTES_PER_SAMPLE = 3  # 24-bit samples
+DEFAULT_SAMPLES_PER_PACKET = 16  # BioSemi sends multiple samples per TCP packet
 
 # ──────────────────────────────────────────────────────
 # Data Stream Thread
@@ -51,14 +53,15 @@ class DataStreamThread(QThread):
     error_signal = pyqtSignal(str)
     disconnected_signal = pyqtSignal()
 
-    def __init__(self, host, port, channels, bytes_per_sample, uv_to_bits):
+    def __init__(self, host, port, channels, bytes_per_sample, uv_to_bits, samples_per_packet):
         super().__init__()
         self.host = host
         self.port = port
         self.channels = channels
         self.bytes_per_sample = bytes_per_sample
         self.uv_to_bits = uv_to_bits
-        self.packet_size = channels * bytes_per_sample
+        self.samples_per_packet = samples_per_packet
+        self.packet_size = channels * bytes_per_sample * samples_per_packet
         self.running = False
         self.sock = None
 
@@ -97,15 +100,19 @@ class DataStreamThread(QThread):
                     self.running = False
                     break
                     
-                # Unpack N-bit little-endian signed integers (BioSemi format)
-                values = []
-                for ch in range(self.channels):
-                    offset = ch * self.bytes_per_sample
-                    sample_bytes = raw_data[offset:offset + self.bytes_per_sample]
-                    raw_int = int.from_bytes(sample_bytes, byteorder='little', signed=True)
-                    uv_value = raw_int / self.uv_to_bits
-                    values.append(uv_value)
-                self.new_data_signal.emit(values)
+                all_samples = []
+                sample_stride = self.channels * self.bytes_per_sample
+                for s in range(self.samples_per_packet):
+                    sample_offset = s * sample_stride
+                    values = []
+                    for ch in range(self.channels):
+                        offset = sample_offset + ch * self.bytes_per_sample
+                        sample_bytes = raw_data[offset:offset + self.bytes_per_sample]
+                        raw_int = int.from_bytes(sample_bytes, byteorder='little', signed=True)
+                        uv_value = raw_int / self.uv_to_bits
+                        values.append(uv_value)
+                    all_samples.append(values)
+                self.new_data_signal.emit(all_samples)
             except socket.timeout:
                 continue
             except Exception as e:
@@ -234,6 +241,9 @@ class SimulatorView(QWidget):
         
         self.pending_samples = []
         
+        # Downsampling state (headset SR → model SR)
+        self.headset_sr = sf  # Updated at connect time; default = no resample
+        
         # Update plotting at ~30Hz
         self.ui_timer = QTimer(self)
         self.ui_timer.timeout.connect(self._update_gui_plot)
@@ -342,6 +352,13 @@ class SimulatorView(QWidget):
         self.input_sample_rate.setMaximumWidth(80)
         row2.addWidget(self.input_sample_rate)
         
+        row2.addSpacing(15)
+        row2.addWidget(QLabel("Samples/Packet:"))
+        self.input_samples_per_packet = QLineEdit(str(DEFAULT_SAMPLES_PER_PACKET))
+        self.input_samples_per_packet.setValidator(QIntValidator(1, 1024))
+        self.input_samples_per_packet.setMaximumWidth(60)
+        row2.addWidget(self.input_samples_per_packet)
+        
         row2.addStretch()
         settings_layout.addLayout(row2)
         
@@ -370,6 +387,7 @@ class SimulatorView(QWidget):
         
         self.input_channels.textChanged.connect(self._update_packet_info)
         self.input_bytes_per_sample.textChanged.connect(self._update_packet_info)
+        self.input_samples_per_packet.textChanged.connect(self._update_packet_info)
         
         self.settings_group.setLayout(settings_layout)
         main_layout.addWidget(self.settings_group)
@@ -582,11 +600,13 @@ class SimulatorView(QWidget):
         try:
             ch = int(self.input_channels.text())
             bps = int(self.input_bytes_per_sample.text())
+            spp = int(self.input_samples_per_packet.text())
         except (ValueError, AttributeError):
-            ch, bps = DEFAULT_CHANNELS, DEFAULT_BYTES_PER_SAMPLE
-        packet = ch * bps
+            ch, bps, spp = DEFAULT_CHANNELS, DEFAULT_BYTES_PER_SAMPLE, DEFAULT_SAMPLES_PER_PACKET
+        packet = ch * bps * spp
         self.packet_info_lbl.setText(
-            f"Packet size: {ch} ch × {bps} bytes = {packet} bytes/sample"
+            f"Packet size: {ch} ch × {bps} bytes × {spp} samples = {packet} bytes/packet"
+            + (f"  —  first {n_channels} channels used by model" if ch > n_channels else "")
         )
 
     def _clear_signal(self):
@@ -637,6 +657,10 @@ class SimulatorView(QWidget):
         sample_rate = int(self.input_sample_rate.text() or DEFAULT_SAMPLE_RATE)
         bytes_per_sample = int(self.input_bytes_per_sample.text() or DEFAULT_BYTES_PER_SAMPLE)
         uv_to_bits = int(self.input_uv_to_bits.text() or DEFAULT_UV_TO_BITS)
+        samples_per_packet = int(self.input_samples_per_packet.text() or DEFAULT_SAMPLES_PER_PACKET)
+        
+        # Store headset SR for downsampling in _update_gui_plot
+        self.headset_sr = max(1, sample_rate)
         
         # Reset state
         self.review_mode = False
@@ -657,7 +681,7 @@ class SimulatorView(QWidget):
         if not self.worker_thread.isRunning():
             self.worker_thread.start()
 
-        self.stream_thread = DataStreamThread(host, port, channels, bytes_per_sample, uv_to_bits)
+        self.stream_thread = DataStreamThread(host, port, channels, bytes_per_sample, uv_to_bits, samples_per_packet)
         self.stream_thread.new_data_signal.connect(self.on_new_data)
         self.stream_thread.error_signal.connect(self.on_connection_error)
         self.stream_thread.disconnected_signal.connect(self.on_disconnected)
@@ -700,9 +724,11 @@ class SimulatorView(QWidget):
         # Pause music on disconnect (but keep piano roll visible for review)
         self.synth.pause()
 
-    def on_new_data(self, data):
-        # Thread-safely push data into pending list
-        self.pending_samples.append(data)
+    def on_new_data(self, all_samples):
+        # all_samples is a list of per-sample lists (one list per sample in the packet)
+        # Each inner list has `channels` values; we trim to n_channels for the model.
+        for sample in all_samples:
+            self.pending_samples.append(sample[:n_channels])
 
     def on_connection_error(self, err_msg):
         self.stop_listening()
@@ -815,12 +841,21 @@ class SimulatorView(QWidget):
         samples_to_flush = self.pending_samples[:]
         self.pending_samples.clear()
         
-        num_new = len(samples_to_flush)
-        if num_new == 0:
+        if not samples_to_flush:
             return
             
-        # Convert to numpy block (num_new, 62) -> transpose to (62, num_new)
-        new_block = np.array(samples_to_flush).T
+        # Convert to numpy block (n_channels, num_new_raw) at headset sample rate
+        new_block = np.array(samples_to_flush, dtype=np.float32).T  # (n_channels, num_new_raw)
+        
+        # ── Downsample to model rate (sf = 200 Hz) if headset SR differs ──
+        if self.headset_sr != self.sf:
+            g = math.gcd(self.sf, self.headset_sr)
+            up = self.sf // g          # target rate factor
+            down = self.headset_sr // g  # source rate factor
+            # resample_poly expects (signal, up, down) along last axis
+            new_block = scipy.signal.resample_poly(new_block, up, down, axis=1).astype(np.float32)
+        
+        num_new = new_block.shape[1]  # samples at model rate
         
         # Append to full history, resizing if necessary
         if self.total_samples_received + num_new > self.full_history_capacity:
