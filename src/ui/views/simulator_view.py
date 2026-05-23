@@ -28,13 +28,13 @@ from src.ui.components.piano_roll import PianoRollWidget
 from src.music.realtime_generator import RealTimeMusicSynthesizer
 
 # Default values (used as UI defaults, can be changed by user)
-DEFAULT_HOST = '127.0.0.1'
+DEFAULT_HOST = '127.0.0.1' #'127.0.0.1''192.168.100.213'
 DEFAULT_PORT = 8888
 DEFAULT_CHANNELS = 64
 DEFAULT_SAMPLE_RATE = 256
 
 # BioSemi ADC resolution: 1 bit = 31.25 nV = 0.03125 µV
-# So 1 µV = 1 / 0.03125 = 32000 bits
+# So 1 µV = 1 / 0.03125 = 32 bits
 DEFAULT_UV_TO_BITS = 32
 DEFAULT_BYTES_PER_SAMPLE = 3  # 24-bit samples
 DEFAULT_SAMPLES_PER_PACKET = 2  # BioSemi sends multiple samples per TCP packet
@@ -91,9 +91,8 @@ class DataStreamThread(QThread):
 
         while self.running:
             try:
-                #raw_data = self.recvall(self.packet_size)
-                raw_data = self.sock.recv(self.packet_size)
-
+                raw_data = self.recvall(self.packet_size)
+                
                 if not self.running:
                     break
                     
@@ -111,7 +110,7 @@ class DataStreamThread(QThread):
                         offset = sample_offset + ch * self.bytes_per_sample
                         sample_bytes = raw_data[offset: offset + self.bytes_per_sample]
                         raw_int = int.from_bytes(sample_bytes, byteorder='little', signed=True)
-                        uv_value = float(raw_int)  * self.bits_to_uv
+                        uv_value = float(raw_int) * self.bits_to_uv
                         values.append(uv_value)
                     all_samples.append(values)
                 self.new_data_signal.emit(all_samples)
@@ -226,13 +225,14 @@ class SimulatorView(QWidget):
         self.playhead_samples = 0
         
         # Buffers for UI
+        self.display_channels = n_channels
         self.display_buffer_len = self.sf * 10 # 10 seconds history
-        self.display_data = np.zeros((n_channels, self.display_buffer_len))
+        self.display_data = np.zeros((self.display_channels, self.display_buffer_len))
         self.emotion_probs = []
         
         # Full history buffer for post-disconnect review
         self.full_history_capacity = self.sf * 60 * 5  # Pre-allocate 5 minutes
-        self.full_history = np.zeros((n_channels, self.full_history_capacity))
+        self.full_history = np.zeros((self.display_channels, self.full_history_capacity))
         self.total_samples_received = 0
         self.review_mode = False
         self.awaiting_worker_finish = False
@@ -406,7 +406,7 @@ class SimulatorView(QWidget):
         controls_bar.addSpacing(20)
         
         self.detection_checkbox = QCheckBox("Enable Emotion Detection")
-        self.detection_checkbox.setChecked(True)
+        self.detection_checkbox.setChecked(False)
         self.detection_checkbox.toggled.connect(self._on_detection_toggled)
         controls_bar.addWidget(self.detection_checkbox)
         
@@ -455,7 +455,7 @@ class SimulatorView(QWidget):
         self.label_ch_from = QLabel("Ch:")
         ch_bar.addWidget(self.label_ch_from)
         self.spin_ch_from = QSpinBox()
-        self.spin_ch_from.setRange(1, n_channels)
+        self.spin_ch_from.setRange(1, 256)
         self.spin_ch_from.setValue(1)
         self.spin_ch_from.valueChanged.connect(self._on_channel_changed)
         ch_bar.addWidget(self.spin_ch_from)
@@ -463,7 +463,7 @@ class SimulatorView(QWidget):
         self.label_ch_to = QLabel("to:")
         ch_bar.addWidget(self.label_ch_to)
         self.spin_ch_to = QSpinBox()
-        self.spin_ch_to.setRange(1, n_channels)
+        self.spin_ch_to.setRange(1, 256)
         self.spin_ch_to.setValue(5)
         self.spin_ch_to.valueChanged.connect(self._on_channel_changed)
         ch_bar.addWidget(self.spin_ch_to)
@@ -508,8 +508,12 @@ class SimulatorView(QWidget):
         
         # ── Plots (fixed heights — page scrolls vertically) ──
         self.eeg_plot = EegPlotWidget()
-        self.eeg_plot.setFixedHeight(350)
+        self.eeg_plot.setFixedHeight(250)
         main_layout.addWidget(self.eeg_plot)
+        
+        self.downsampled_plot = EegPlotWidget()
+        self.downsampled_plot.setFixedHeight(250)
+        main_layout.addWidget(self.downsampled_plot)
         
         self.emotion_plot = EmotionPlotWidget()
         self.emotion_plot.setFixedHeight(280)
@@ -571,15 +575,17 @@ class SimulatorView(QWidget):
         mode = self.channel_mode_combo.currentIndex()
         if mode == 0:  # Single
             ch = self.spin_ch_from.value() - 1
-            return [(f"Ch {ch+1}", ch)]
+            if ch < self.display_channels:
+                return [(f"Ch {ch+1}", ch)]
+            return []
         elif mode == 1:  # Range
             ch_from = self.spin_ch_from.value() - 1
             ch_to = self.spin_ch_to.value() - 1
             if ch_from > ch_to:
                 ch_from, ch_to = ch_to, ch_from
-            return [(f"Ch {i+1}", i) for i in range(ch_from, ch_to + 1)]
+            return [(f"Ch {i+1}", i) for i in range(ch_from, min(ch_to + 1, self.display_channels))]
         else:  # All
-            return [(f"Ch {i+1}", i) for i in range(n_channels)]
+            return [(f"Ch {i+1}", i) for i in range(self.display_channels)]
     
     def _on_channel_mode_changed(self, index):
         is_range = (index == 1)
@@ -614,17 +620,19 @@ class SimulatorView(QWidget):
     def _clear_signal(self):
         """Reset all buffers and plots while optionally staying connected."""
         self.playhead_samples = 0
-        self.display_data = np.zeros((n_channels, self.display_buffer_len))
+        self.display_data = np.zeros((self.display_channels, self.display_buffer_len))
         self.emotion_probs = []
-        self.full_history_capacity = self.sf * 60 * 5
-        self.full_history = np.zeros((n_channels, self.full_history_capacity))
+        self.full_history_capacity = self.headset_sr * 60 * 5
+        self.full_history = np.zeros((self.display_channels, self.full_history_capacity))
         self.total_samples_received = 0
+        self.window_samples = self.headset_sr if hasattr(self, 'headset_sr') else sf
         self.classification_buffer = np.zeros((n_channels, self.window_samples))
         self.buffer_pos = 0
         self.pending_samples = []
         
         # Clear the plots
         self.eeg_plot.set_data([], np.array([]), "EEG Signal")
+        self.downsampled_plot.set_data([], np.array([]), "Downsampled Signal (200Hz)")
         self.emotion_plot.set_data(
             np.zeros((1, 4)), np.array([0]), 0, 1
         )
@@ -663,6 +671,7 @@ class SimulatorView(QWidget):
         
         # Store headset SR for downsampling in _update_gui_plot
         self.headset_sr = max(1, sample_rate)
+        self.display_channels = channels
         
         # Reset state
         self.review_mode = False
@@ -670,11 +679,18 @@ class SimulatorView(QWidget):
         self.review_widget.setVisible(False)
         self.time_scrollbar.setVisible(False)
         self.playhead_samples = 0
-        self.display_data = np.zeros((n_channels, self.display_buffer_len))
+        
+        self.display_buffer_len = self.headset_sr * 10
+        self.display_data = np.zeros((self.display_channels, self.display_buffer_len))
+        
+        self.downsampled_display_len = sf * 10
+        self.downsampled_display_data = np.zeros((n_channels, self.downsampled_display_len))
+        
         self.emotion_probs = []
-        self.full_history_capacity = self.sf * 60 * 5
-        self.full_history = np.zeros((n_channels, self.full_history_capacity))
+        self.full_history_capacity = self.headset_sr * 60 * 5
+        self.full_history = np.zeros((self.display_channels, self.full_history_capacity))
         self.total_samples_received = 0
+        self.window_samples = self.headset_sr
         self.classification_buffer = np.zeros((n_channels, self.window_samples))
         self.buffer_pos = 0
         self.pending_samples = []
@@ -728,9 +744,8 @@ class SimulatorView(QWidget):
 
     def on_new_data(self, all_samples):
         # all_samples is a list of per-sample lists (one list per sample in the packet)
-        # Each inner list has `channels` values; we trim to n_channels for the model.
         for sample in all_samples:
-            self.pending_samples.append(sample[:n_channels])
+            self.pending_samples.append(sample[:self.display_channels])
 
     def on_connection_error(self, err_msg):
         self.stop_listening()
@@ -787,13 +802,13 @@ class SimulatorView(QWidget):
         if self.total_samples_received == 0:
             return
             
-        total_seconds = self.total_samples_received / self.sf
+        total_seconds = self.total_samples_received / self.headset_sr
         window_size = self.spin_window_size.value()
-        max_scroll = max(0, int((total_seconds - window_size) * self.sf))
+        max_scroll = max(0, int((total_seconds - window_size) * self.headset_sr))
         
         self.time_scrollbar.setMaximum(max_scroll)
-        self.time_scrollbar.setSingleStep(int(self.sf * 0.1))
-        self.time_scrollbar.setPageStep(int(self.sf * window_size * 0.5))
+        self.time_scrollbar.setSingleStep(int(self.headset_sr * 0.1))
+        self.time_scrollbar.setPageStep(int(self.headset_sr * window_size * 0.5))
 
     def _update_review_plots(self):
         if not self.review_mode or self.total_samples_received == 0:
@@ -803,7 +818,7 @@ class SimulatorView(QWidget):
             start_sample = 0
             end_sample = self.total_samples_received
         else:
-            window_size_samples = int(self.spin_window_size.value() * self.sf)
+            window_size_samples = int(self.spin_window_size.value() * self.headset_sr)
             start_sample = self.time_scrollbar.value()
             end_sample = min(self.total_samples_received, start_sample + window_size_samples)
             
@@ -811,9 +826,19 @@ class SimulatorView(QWidget):
             return
             
         # Plot EEG
-        time_axis = np.arange(start_sample, end_sample) / self.sf
+        time_axis = np.arange(start_sample, end_sample) / self.headset_sr
         channels = self._get_selected_channels()
-        ch_data = [(label, self.full_history[idx, start_sample:end_sample]) for label, idx in channels]
+        ch_data = []
+        for i, (label, idx) in enumerate(channels):
+            data = self.full_history[idx, start_sample:end_sample].copy()
+            if len(data) > 0:
+                mean_val = np.mean(data)
+                centered = data - mean_val
+            else:
+                centered = data
+            offset = i * 150.0
+            ch_data.append((label, centered + offset))
+            
         self.eeg_plot.set_data(ch_data, time_axis, "EEG Signal — Review Mode")
         
         # Plot Emotions
@@ -821,8 +846,8 @@ class SimulatorView(QWidget):
             probs_arr = np.array(self.emotion_probs)
             emotion_time = np.arange(len(self.emotion_probs)) * 1.0 # 1 second segments
             
-            start_time = start_sample / self.sf
-            end_time = end_sample / self.sf
+            start_time = start_sample / self.headset_sr
+            end_time = end_sample / self.headset_sr
             
             e_start = max(0, int(start_time))
             e_end = min(len(self.emotion_probs), int(np.ceil(end_time)))
@@ -846,23 +871,15 @@ class SimulatorView(QWidget):
         if not samples_to_flush:
             return
             
-        # Convert to numpy block (n_channels, num_new_raw) at headset sample rate
-        new_block = np.array(samples_to_flush, dtype=np.float32).T  # (n_channels, num_new_raw)
+        # Convert to numpy block (channels, num_new_raw) at headset sample rate
+        new_block = np.array(samples_to_flush, dtype=np.float32).T
         
-        # ── Downsample to model rate (sf = 200 Hz) if headset SR differs ──
-        if self.headset_sr != self.sf:
-            g = math.gcd(self.sf, self.headset_sr)
-            up = self.sf // g          # target rate factor
-            down = self.headset_sr // g  # source rate factor
-            # resample_poly expects (signal, up, down) along last axis
-            new_block = scipy.signal.resample_poly(new_block, up, down, axis=1).astype(np.float32)
-        
-        num_new = new_block.shape[1]  # samples at model rate
+        num_new = new_block.shape[1]
         
         # Append to full history, resizing if necessary
         if self.total_samples_received + num_new > self.full_history_capacity:
-            self.full_history_capacity = max(self.full_history_capacity * 2, self.total_samples_received + num_new + self.sf * 60)
-            new_history = np.zeros((n_channels, self.full_history_capacity))
+            self.full_history_capacity = max(self.full_history_capacity * 2, self.total_samples_received + num_new + self.headset_sr * 60)
+            new_history = np.zeros((self.display_channels, self.full_history_capacity))
             new_history[:, :self.total_samples_received] = self.full_history[:, :self.total_samples_received]
             self.full_history = new_history
             
@@ -875,36 +892,102 @@ class SimulatorView(QWidget):
             self.display_data[:, :-shift] = self.display_data[:, shift:]
         self.display_data[:, -shift:] = new_block[:, -shift:]
         
-        # Build classification buffer
-        remaining = num_new
-        src_offset = 0
-        while remaining > 0:
-            space = self.window_samples - self.buffer_pos
-            take = min(remaining, space)
-            
-            self.classification_buffer[:, self.buffer_pos:self.buffer_pos + take] = new_block[:, src_offset:src_offset + take]
-            self.buffer_pos += take
-            src_offset += take
-            remaining -= take
-            
-            if self.buffer_pos >= self.window_samples:
-                if self.detection_checkbox.isChecked():
-                    self.worker.enqueue(self.classification_buffer)
-                self.buffer_pos = 0
+        # Build classification buffer (only if model is enabled)
+        if self.detection_checkbox.isChecked():
+            model_block = new_block[:min(new_block.shape[0], n_channels), :]
+            if model_block.shape[0] < n_channels:
+                # Pad with zeros if fewer channels than the model expects
+                pad = np.zeros((n_channels - model_block.shape[0], model_block.shape[1]), dtype=np.float32)
+                model_block = np.vstack([model_block, pad])
+                
+            model_num_new = model_block.shape[1]
+            remaining = model_num_new
+            src_offset = 0
+            while remaining > 0:
+                space = self.window_samples - self.buffer_pos
+                take = min(remaining, space)
+                
+                self.classification_buffer[:, self.buffer_pos:self.buffer_pos + take] = model_block[:, src_offset:src_offset + take]
+                self.buffer_pos += take
+                src_offset += take
+                remaining -= take
+                
+                if self.buffer_pos >= self.window_samples:
+                    # We have a full 1-second block at headset_sr
+                    # Now we downsample this 1-second block to model frequency (sf = 200 Hz)
+                    if self.headset_sr != sf:
+                        g = math.gcd(sf, self.headset_sr)
+                        up = sf // g
+                        down = self.headset_sr // g
+                        ds_block = scipy.signal.resample_poly(self.classification_buffer, up, down, axis=1).astype(np.float32)
+                    else:
+                        ds_block = self.classification_buffer.copy()
+                        
+                    # Shift downsampled display buffer and insert the downsampled 1-second block
+                    ds_num = ds_block.shape[1]
+                    shift_ds = min(ds_num, self.downsampled_display_len)
+                    if shift_ds < self.downsampled_display_len:
+                        self.downsampled_display_data[:, :-shift_ds] = self.downsampled_display_data[:, shift_ds:]
+                    self.downsampled_display_data[:, -shift_ds:] = ds_block[:, -shift_ds:]
+                    
+                    self.worker.enqueue(ds_block)
+                    self.buffer_pos = 0
 
         self.playhead_samples += num_new
 
         # Update EEG widget (showing full 10 seconds rolling)
-        cur_t = self.playhead_samples / self.sf
-        t_start = max(0, cur_t - (self.display_buffer_len / self.sf))
+        cur_t = self.playhead_samples / self.headset_sr
+        t_start = max(0, cur_t - (self.display_buffer_len / self.headset_sr))
         time_axis = np.linspace(t_start, cur_t, self.display_buffer_len)
         
         channels = self._get_selected_channels()
-        ch_data = [(label, self.display_data[idx, :]) for label, idx in channels]
+        ch_data = []
+        for i, (label, idx) in enumerate(channels):
+            data = self.display_data[idx, :].copy()
+            
+            valid_start = max(0, self.display_buffer_len - self.playhead_samples)
+            if self.playhead_samples > 0:
+                valid_data = data[valid_start:]
+                mean_val = np.mean(valid_data) if len(valid_data) > 0 else 0.0
+                
+                # Overwrite initial zeros so they don't skew the visual start
+                if valid_start > 0:
+                    data[:valid_start] = mean_val
+                    
+                centered = data - mean_val
+            else:
+                centered = data
+                
+            offset = i * 150.0
+            ch_data.append((label, centered + offset))
         
         self.eeg_plot.set_data(
-            ch_data, time_axis,
-            f"EEG Signal — Live stream ({cur_t:.1f}s)"
+            ch_data, 
+            time_axis,
+            f"EEG Signal (Real-time) — {self.headset_sr} Hz"
+        )
+        
+        ds_ch_data = []
+        for i, (label, idx) in enumerate(channels):
+            if idx < n_channels:
+                data = self.downsampled_display_data[idx, :].copy()
+                valid_start = max(0, self.downsampled_display_len - int(self.playhead_samples * sf / self.headset_sr))
+                if self.playhead_samples > 0:
+                    valid_data = data[valid_start:]
+                    mean_val = np.mean(valid_data) if len(valid_data) > 0 else 0.0
+                    if valid_start > 0:
+                        data[:valid_start] = mean_val
+                    centered = data - mean_val
+                else:
+                    centered = data
+                offset = i * 150.0
+                ds_ch_data.append((label, centered + offset))
+        
+        downsampled_time_axis = np.linspace(t_start, cur_t, self.downsampled_display_len)
+        self.downsampled_plot.set_data(
+            ds_ch_data,
+            downsampled_time_axis,
+            f"Downsampled Signal (Model Input) — {sf} Hz, min({n_channels}, {self.display_channels}) Channels"
         )
 
     # ── Worker callbacks (main thread) ───────────────────
