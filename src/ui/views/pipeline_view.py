@@ -122,7 +122,8 @@ class EegPlotWidget(QWidget):
         painter.setPen(QPen(self.grid_color, 1, Qt.DashLine))
         for i in range(6):
             frac = i / 5.0
-            y = plot_y + plot_h - (frac * plot_h)
+            # Clinical EEG style: Negative values (all_min) plotted at the TOP
+            y = plot_y + (frac * plot_h)
             painter.drawLine(QPointF(plot_x, y), QPointF(plot_x + plot_w, y))
             val = all_min + frac * data_range
             painter.setPen(QPen(self.axis_color))
@@ -162,7 +163,8 @@ class EegPlotWidget(QWidget):
                 t = float(self.time_axis[j])
                 v = float(data[j])
                 x = plot_x + ((t - t_min) / t_range) * plot_w
-                y = plot_y + plot_h - ((v - all_min) / data_range) * plot_h
+                # Clinical EEG style: Invert Y-axis (Negative UP)
+                y = plot_y + ((v - all_min) / data_range) * plot_h
                 if first:
                     path.moveTo(x, y)
                     first = False
@@ -179,7 +181,7 @@ class EegPlotWidget(QWidget):
         painter.save()
         painter.translate(12, plot_y + plot_h / 2)
         painter.rotate(-90)
-        painter.drawText(QRectF(-plot_h/2, -10, plot_h, 20), Qt.AlignCenter, "Amplitude")
+        painter.drawText(QRectF(-plot_h/2, -10, plot_h, 20), Qt.AlignCenter, "Amplitude (µV)")
         painter.restore()
 
 
