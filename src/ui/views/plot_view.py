@@ -8,8 +8,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import pyqtSignal, Qt
 
-# Reuse the custom QPainter EEG plot widget from pipeline_view
-from src.ui.views.pipeline_view import EegPlotWidget
+from src.ui.components.eeg_plots import EegPlotWidget
 
 class PlotView(QWidget):
     navigate_to_home_signal = pyqtSignal()

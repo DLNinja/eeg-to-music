@@ -27,7 +27,7 @@ mido>=1.2.0
 pyfluidsynth>=1.3.0
 pygame>=2.0.0
 
-# Dependencies found in original setup
+# Other dependencies
 h5py>=3.0.0
 opencv-python>=4.7.0
 pillow>=9.5.0

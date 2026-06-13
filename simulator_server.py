@@ -12,7 +12,7 @@ HOST = '0.0.0.0'
 PORT = 8888
 CHANNELS = 62          # Channels in the data file
 STREAM_CHANNELS = 64   # Channels actually sent over TCP (extra ones are zeros)
-SAMPLE_RATE = 256   # Hz — rate at which data is streamed to the client
+SAMPLE_RATE = 200   # Hz — rate at which data is streamed to the client
 DATA_RATE = 200     # Hz — original sample rate of the .mat files
                     #       set SAMPLE_RATE > DATA_RATE to upsample before streaming
 SAMPLES_PER_PACKET = 2  # Number of samples bundled into each TCP packet
@@ -23,26 +23,23 @@ MAT_FILE = 'data/raw/eeg_seed/1/1_20131027.mat'
 # BioSemi ADC resolution: 1 bit = 31.25 nV = 0.03125 µV
 # So 1 µV = 1 / 0.03125 = 32 bits
 UV_TO_BITS = 32
-BYTES_PER_SAMPLE = 3  # 24-bit samples
+BYTES_PER_SAMPLE = 3
 
 
+# Float to BioSemi format (24 bit, little endian)
 def float_to_biosemi_24bit(value_uv):
-    """
-    Convert a float µV value into a 3-byte little-endian signed integer,
-    matching the BioSemi ActiView TCP/IP format.
-    """
     raw_int = int(round(value_uv * UV_TO_BITS))
     raw_int = max(-8388608, min(8388607, raw_int))
     raw_bytes = raw_int.to_bytes(4, byteorder='little', signed=True)
     return raw_bytes[:3]
 
-
+# Loads trials from specified filepath
+# Upsamples signal if signal sr and desired sr mismatch
 def load_eeg_data(filepath):
-    """Loads all trials of EEG data, upsampling from DATA_RATE to SAMPLE_RATE."""
     print(f"Loading {filepath} into memory...")
     mat = scipy.io.loadmat(filepath)
 
-    # Auto-detect trial keys (e.g. 'cz_eeg1', 'djc_eeg1', etc.)
+    # Retrieve trial keys from Matlab file
     trial_keys = sorted(
         [k for k in mat.keys() if not k.startswith('_') and 'eeg' in k],
         key=lambda x: int(x.split('eeg')[1])
@@ -59,9 +56,8 @@ def load_eeg_data(filepath):
 
     trials = []
     for key in trial_keys:
-        data_trial = mat[key][:CHANNELS, :]  # (62, N_original)
+        data_trial = mat[key][:CHANNELS, :]
         if up != 1 or down != 1:
-            # resample_poly operates along last axis by default
             data_trial = scipy.signal.resample_poly(data_trial, up, down, axis=1).astype(np.float32)
         trials.append(data_trial)
 
@@ -71,6 +67,7 @@ def load_eeg_data(filepath):
     return trials
 
 
+# Sender method for transmitting the trial data through TCP/IP
 def handle_client(conn, addr, all_trials):
     print(f"Connected by {addr}")
     try:
@@ -98,7 +95,8 @@ def handle_client(conn, addr, all_trials):
                     samples_in_packet += 1
 
                 conn.sendall(packet)
-                # Sleep for exactly the real-time duration of this packet
+                
+                # Sleep to simulate real-time acquisition of signal
                 time.sleep(samples_in_packet / SAMPLE_RATE)
 
             # Loop to next trial
