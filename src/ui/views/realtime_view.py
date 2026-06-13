@@ -3,104 +3,21 @@ import time
 import scipy.io
 import numpy as np
 import torch
-from queue import Queue
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, 
     QFileDialog, QPushButton, QGroupBox, QMessageBox, QFrame,
     QRadioButton, QDoubleSpinBox, QScrollBar, QSpinBox, QScrollArea
 )
-from PyQt5.QtCore import pyqtSignal, Qt, QTimer, QThread, QObject
+from PyQt5.QtCore import pyqtSignal, Qt, QTimer, QThread
 
-from src.model.signal_processing import (
-    sf, n_channels, bands,
-    create_bandpass_filter, filter_segment,
-    extract_single_window_features, smooth_features, moving_average
-)
-from src.model.emotion_classifier import EEGResNet
-from src.ui.views.pipeline_view import EegPlotWidget, EmotionPlotWidget
+from src.eeg_pipeline.signal_processing import sf, n_channels
+from src.eeg_pipeline.emotion_classifier import load_emotion_model
+from src.eeg_pipeline.classification_worker import ClassificationWorker
+from src.eeg_pipeline.emotion_result import EmotionResult
+from src.ui.components.eeg_plots import EegPlotWidget, EmotionPlotWidget, BandZScorePlotWidget, AsymmetryGaugeWidget
 from src.ui.components.piano_roll import PianoRollWidget
+from src.ui.components.channel_selector import ChannelSelectorWidget
 from src.music.realtime_generator import RealTimeMusicSynthesizer
-
-
-# ──────────────────────────────────────────────────────
-# Background classification worker
-# ──────────────────────────────────────────────────────
-
-class ClassificationWorker(QObject):
-    """Runs filter → features → smooth → classify in a background thread."""
-    result_ready = pyqtSignal(object, object, float)  # (features_62x5, probs_4, timestamp)
-    all_done = pyqtSignal()  # emitted when queue is drained after finish signal
-    
-    def __init__(self, sos, zi_template, model, stft_n, sample_rate):
-        super().__init__()
-        self.sos = sos
-        self._zi_template = zi_template
-        self.model = model
-        self.stft_n = stft_n
-        self.sf = sample_rate
-        
-        self._queue = Queue()
-        self._running = False
-        
-        self.filter_zi = None
-        self.raw_features = []
-    
-    def reset(self):
-        n_sections = self._zi_template.shape[0]
-        self.filter_zi = np.zeros((n_channels, n_sections, 2))
-        for ch in range(n_channels):
-            self.filter_zi[ch] = self._zi_template.copy()
-        self.raw_features = []
-        while not self._queue.empty():
-            try: self._queue.get_nowait()
-            except: break
-    
-    def enqueue(self, segment, timestamp):
-        self._queue.put(("segment", (segment.copy(), timestamp)))
-    
-    def finish(self):
-        """Signal that no more segments will be added. Worker will drain then emit all_done."""
-        self._queue.put(("finish", None))
-    
-    def stop(self):
-        self._running = False
-        self._queue.put(("stop", None))
-    
-    def run(self):
-        self._running = True
-        while self._running:
-            item = self._queue.get()
-            tag, data = item
-            if tag == "stop":
-                break
-            elif tag == "finish":
-                self.all_done.emit()
-                break
-            elif tag == "segment":
-                seg_data, ts = data
-                self._process(seg_data, ts)
-    
-    def _process(self, segment, timestamp):
-        filtered, self.filter_zi = filter_segment(segment, self.sos, self.filter_zi)
-        features = extract_single_window_features(filtered, self.stft_n, self.sf)
-        self.raw_features.append(features)
-        if len(self.raw_features) > 20: # Limit history
-            self.raw_features.pop(0)
-        
-        features_arr = np.array(self.raw_features)
-        T = features_arr.shape[0]
-        window = min(5, T)
-        smoothed = features_arr[max(0, T-window):T].mean(axis=0)
-        
-        if self.model is not None:
-            input_tensor = torch.tensor(smoothed, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
-            with torch.no_grad():
-                output = self.model(input_tensor)
-            probs = torch.nn.functional.softmax(output, dim=1).numpy()[0]
-        else:
-            probs = np.array([0.25, 0.25, 0.25, 0.25])
-        
-        self.result_ready.emit(features, probs, timestamp)
 
 
 # ──────────────────────────────────────────────────────
@@ -141,18 +58,15 @@ class RealTimeView(QWidget):
         self.stream_timer = QTimer(self)
         self.stream_timer.timeout.connect(self._on_timer_tick)
         
-        self.model = None
-        self._load_model()
+        self.model = load_emotion_model()
         
-        self.sos, self._zi_template = create_bandpass_filter(self.sf, 0.1, 75.0)
-        
+        self.sos, self._zi_template = None, None  # managed by ClassificationWorker internally
+
         self.worker_thread = QThread()
-        self.worker = ClassificationWorker(
-            self.sos, self._zi_template, self.model, self.stft_n, self.sf
-        )
+        self.worker = ClassificationWorker(self.model, self.stft_n, self.sf)
         self.worker.moveToThread(self.worker_thread)
         self.worker_thread.started.connect(self.worker.run)
-        self.worker.result_ready.connect(self._on_classification_result)
+        self.worker.thread_result.connect(self._on_classification_result)
         self.worker.all_done.connect(self._on_worker_finished)
         
         self.synth = RealTimeMusicSynthesizer()
@@ -161,15 +75,6 @@ class RealTimeView(QWidget):
         self.synth.start() # Start the background thread loop
         
         self._setup_ui()
-    
-    def _load_model(self):
-        try:
-            self.model = EEGResNet(num_classes=4)
-            checkpoint = torch.load("models/best_model_stft_smooth.pt", map_location=torch.device('cpu'))
-            self.model.load_state_dict(checkpoint["model_state"])
-            self.model.eval()
-        except Exception as e:
-            print(f"Warning: Failed to load model: {e}")
     
     def _setup_ui(self):
         root_layout = QVBoxLayout(self)
@@ -204,29 +109,25 @@ class RealTimeView(QWidget):
         top_bar.addStretch()
         main_layout.addLayout(top_bar)
         
-        # ── Playback controls ──
+        # ── Playback controls (Left-aligned & static to prevent shifting) ──
         controls_bar = QHBoxLayout()
-        controls_bar.addStretch()
         
-        # Style helpers
-        btn_style = "border-radius: 4px; font-weight: bold; padding: 6px 15px;"
-
         self.play_btn = QPushButton("▶ Play")
+        self.play_btn.setObjectName("playBtn")
         self.play_btn.clicked.connect(self.start_playback)
         self.play_btn.setEnabled(False)
-        self.play_btn.setStyleSheet(f"background-color: #1a1a1a; color: #00FFB2; border: 1px solid #00FFB2; {btn_style}")
         controls_bar.addWidget(self.play_btn)
         
         self.pause_btn = QPushButton("⏸ Pause")
+        self.pause_btn.setObjectName("pauseBtn")
         self.pause_btn.clicked.connect(self.pause_playback)
         self.pause_btn.setEnabled(False)
-        self.pause_btn.setStyleSheet(f"background-color: #1a1a1a; color: #FF9800; border: 1px solid #FF9800; {btn_style}")
         controls_bar.addWidget(self.pause_btn)
         
         self.stop_btn = QPushButton("⏹ Stop")
+        self.stop_btn.setObjectName("stopBtn")
         self.stop_btn.clicked.connect(self.stop_playback)
         self.stop_btn.setEnabled(False)
-        self.stop_btn.setStyleSheet(f"background-color: #1a1a1a; color: #F44336; border: 1px solid #F44336; {btn_style}")
         controls_bar.addWidget(self.stop_btn)
 
         controls_bar.addSpacing(20)
@@ -237,65 +138,102 @@ class RealTimeView(QWidget):
         controls_bar.addWidget(self.speed_combo)
         
         controls_bar.addStretch()
-        
-        self.status_label = QLabel("Load a .mat file and select a trial to begin.")
-        self.status_label.setStyleSheet("font-size: 12px; padding: 4px;")
-        controls_bar.addWidget(self.status_label)
-        
         main_layout.addLayout(controls_bar)
-
-        # ── Music Controls ──
-        music_bar = QHBoxLayout()
-        music_bar.addWidget(QLabel("🔈"))
+        
+        # ── Dashboard Cards Row (Fixed-width boxes to prevent any UI movement) ──
+        dashboard_layout = QHBoxLayout()
+        
+        # 1. Pipeline Status Card (Stretches)
+        self.status_card = QWidget()
+        self.status_card.setObjectName("dashboardCard")
+        status_card_layout = QVBoxLayout(self.status_card)
+        status_card_layout.setContentsMargins(8, 4, 8, 4)
+        status_title = QLabel("System Status")
+        status_title.setObjectName("cardTitle")
+        self.status_val = QLabel("Load a .mat file and select a trial to begin.")
+        self.status_val.setObjectName("cardValue")
+        self.status_val.setWordWrap(True)
+        status_card_layout.addWidget(status_title)
+        status_card_layout.addWidget(self.status_val)
+        dashboard_layout.addWidget(self.status_card, stretch=2)
+        
+        # 2. Playback Time Card (Fixed Width)
+        self.time_card = QWidget()
+        self.time_card.setFixedWidth(160)
+        self.time_card.setObjectName("dashboardCard")
+        time_card_layout = QVBoxLayout(self.time_card)
+        time_card_layout.setContentsMargins(8, 4, 8, 4)
+        time_title = QLabel("Playback Time")
+        time_title.setObjectName("cardTitle")
+        self.time_val = QLabel("0.0s / 0.0s")
+        self.time_val.setObjectName("cardValue")
+        self.time_val.setAlignment(Qt.AlignCenter)
+        time_card_layout.addWidget(time_title)
+        time_card_layout.addWidget(self.time_val)
+        dashboard_layout.addWidget(self.time_card)
+        
+        # 3. Segments Classified Card (Fixed Width)
+        self.segments_card = QWidget()
+        self.segments_card.setFixedWidth(140)
+        self.segments_card.setObjectName("dashboardCard")
+        segments_card_layout = QVBoxLayout(self.segments_card)
+        segments_card_layout.setContentsMargins(8, 4, 8, 4)
+        segments_title = QLabel("EEG Segments")
+        segments_title.setObjectName("cardTitle")
+        self.segments_val = QLabel("0 classified")
+        self.segments_val.setObjectName("cardValue")
+        self.segments_val.setAlignment(Qt.AlignCenter)
+        segments_card_layout.addWidget(segments_title)
+        segments_card_layout.addWidget(self.segments_val)
+        dashboard_layout.addWidget(self.segments_card)
+        
+        # 4. Emotion Card (Fixed Width)
+        self.emotion_card = QWidget()
+        self.emotion_card.setFixedWidth(160)
+        self.emotion_card.setObjectName("dashboardCard")
+        emotion_card_layout = QVBoxLayout(self.emotion_card)
+        emotion_card_layout.setContentsMargins(8, 4, 8, 4)
+        emotion_title = QLabel("Dominant Emotion")
+        emotion_title.setObjectName("cardTitle")
+        self.emotion_val = QLabel("—")
+        self.emotion_val.setObjectName("cardValue")
+        self.emotion_val.setAlignment(Qt.AlignCenter)
+        emotion_card_layout.addWidget(emotion_title)
+        emotion_card_layout.addWidget(self.emotion_val)
+        dashboard_layout.addWidget(self.emotion_card)
+        
+        dashboard_layout.setSpacing(10)
+        main_layout.addLayout(dashboard_layout)
+ 
+        # ── Music Controls: Volume Row (Left-aligned) ──
+        music_vol_bar = QHBoxLayout()
+        music_vol_bar.addWidget(QLabel("🔈"))
         self.vol_slider = QScrollBar(Qt.Horizontal)
         self.vol_slider.setRange(0, 127)
         self.vol_slider.setValue(100)
         self.vol_slider.setFixedWidth(100)
         self.vol_slider.valueChanged.connect(self._on_volume_changed)
-        music_bar.addWidget(self.vol_slider)
-
-        music_bar.addSpacing(20)
+        music_vol_bar.addWidget(self.vol_slider)
+        music_vol_bar.addStretch()
+        main_layout.addLayout(music_vol_bar)
+        
+        # ── Music Controls: Playback Progress Row (Stretching) ──
+        music_progress_bar = QHBoxLayout()
         self.time_label = QLabel("00:00 / 00:00")
         self.time_label.setStyleSheet("font-family: monospace; font-size: 14px;")
-        music_bar.addWidget(self.time_label)
-
+        self.time_label.setFixedWidth(110)
+        music_progress_bar.addWidget(self.time_label)
+ 
         self.music_time_slider = QScrollBar(Qt.Horizontal)
         self.music_time_slider.setEnabled(False)
-        music_bar.addWidget(self.music_time_slider)
+        music_progress_bar.addWidget(self.music_time_slider)
         
-        main_layout.addLayout(music_bar)
+        main_layout.addLayout(music_progress_bar)
         
         # ── Channel selection ──
-        ch_bar = QHBoxLayout()
-        ch_bar.addWidget(QLabel("Channels:"))
-        
-        self.channel_mode_combo = QComboBox()
-        self.channel_mode_combo.addItems(["Single Channel", "Channel Range", "All Channels"])
-        self.channel_mode_combo.currentIndexChanged.connect(self._on_channel_mode_changed)
-        ch_bar.addWidget(self.channel_mode_combo)
-        
-        self.label_ch_from = QLabel("Ch:")
-        ch_bar.addWidget(self.label_ch_from)
-        self.spin_ch_from = QSpinBox()
-        self.spin_ch_from.setRange(1, n_channels)
-        self.spin_ch_from.setValue(1)
-        self.spin_ch_from.valueChanged.connect(self._on_channel_changed)
-        ch_bar.addWidget(self.spin_ch_from)
-        
-        self.label_ch_to = QLabel("to:")
-        ch_bar.addWidget(self.label_ch_to)
-        self.spin_ch_to = QSpinBox()
-        self.spin_ch_to.setRange(1, n_channels)
-        self.spin_ch_to.setValue(5)
-        self.spin_ch_to.valueChanged.connect(self._on_channel_changed)
-        ch_bar.addWidget(self.spin_ch_to)
-        
-        # Init visibility for single channel mode
-        self.label_ch_to.setVisible(False)
-        self.spin_ch_to.setVisible(False)
-        
-        ch_bar.addStretch()
-        main_layout.addLayout(ch_bar)
+        self.channel_selector = ChannelSelectorWidget(max_channels=n_channels)
+        self.channel_selector.selection_changed.connect(self._on_channel_changed)
+        main_layout.addWidget(self.channel_selector)
         
         # ── Review controls (hidden during streaming) ──
         self.review_widget = QWidget()
@@ -332,51 +270,32 @@ class RealTimeView(QWidget):
         self.eeg_plot = EegPlotWidget()
         self.eeg_plot.setFixedHeight(350)
         main_layout.addWidget(self.eeg_plot)
-        
-        self.emotion_plot = EmotionPlotWidget()
-        self.emotion_plot.setFixedHeight(280)
-        main_layout.addWidget(self.emotion_plot)
-        
-        # ── Piano Roll ──
-        self.piano_roll = PianoRollWidget()
-        self.piano_roll.setFixedHeight(320)
-        main_layout.addWidget(self.piano_roll)
-        
+
         self.time_scrollbar = QScrollBar(Qt.Horizontal)
         self.time_scrollbar.setMinimum(0)
         self.time_scrollbar.valueChanged.connect(self._update_review_plots)
         self.time_scrollbar.setVisible(False)
         main_layout.addWidget(self.time_scrollbar)
-    
-    # ── Channel helpers ──────────────────────────────────
-    
+
+        self.emotion_plot = EmotionPlotWidget()
+        self.emotion_plot.setFixedHeight(280)
+        main_layout.addWidget(self.emotion_plot)
+        
+        # ── Frontal Alpha Asymmetry Gauge ──
+        self.asymmetry_gauge = AsymmetryGaugeWidget()
+        main_layout.addWidget(self.asymmetry_gauge)
+        
+        # ── Band Z-Score Plot ──
+        self.zscore_plot = BandZScorePlotWidget()
+        self.zscore_plot.setFixedHeight(220)
+        main_layout.addWidget(self.zscore_plot)
+        
+        # ── Piano Roll ──
+        self.piano_roll = PianoRollWidget()
+        self.piano_roll.setFixedHeight(320)
+        main_layout.addWidget(self.piano_roll)
     def _get_selected_channels(self):
-        """Return list of (label, data_row_index) based on current channel selection."""
-        mode = self.channel_mode_combo.currentIndex()
-        if mode == 0:  # Single
-            ch = self.spin_ch_from.value() - 1
-            return [(f"Ch {ch+1}", ch)]
-        elif mode == 1:  # Range
-            ch_from = self.spin_ch_from.value() - 1
-            ch_to = self.spin_ch_to.value() - 1
-            if ch_from > ch_to:
-                ch_from, ch_to = ch_to, ch_from
-            return [(f"Ch {i+1}", i) for i in range(ch_from, ch_to + 1)]
-        else:  # All
-            return [(f"Ch {i+1}", i) for i in range(n_channels)]
-    
-    def _on_channel_mode_changed(self, index):
-        is_range = (index == 1)
-        is_all = (index == 2)
-        
-        self.label_ch_from.setVisible(not is_all)
-        self.spin_ch_from.setVisible(not is_all)
-        self.label_ch_to.setVisible(is_range)
-        self.spin_ch_to.setVisible(is_range)
-        
-        self.label_ch_from.setText("Ch:" if not is_range else "From:")
-        
-        self._on_channel_changed()
+        return self.channel_selector.get_selected_channels()
     
     def _on_channel_changed(self):
         """Refresh plots with new channel selection (during review or live)."""
@@ -423,7 +342,10 @@ class RealTimeView(QWidget):
         
         self.play_btn.setEnabled(True)
         total_s = self.current_trial_data.shape[1] / self.sf
-        self.status_label.setText(f"Trial loaded: {self.current_trial_data.shape[1]} samples ({total_s:.1f}s). Press Play.")
+        self.status_val.setText("Trial loaded successfully. Press Play.")
+        self.time_val.setText(f"0.0s / {total_s:.1f}s")
+        self.segments_val.setText("0 classified")
+        self.emotion_val.setText("—")
         
         self.eeg_plot.clear_data()
         self.emotion_plot.clear_data()
@@ -499,30 +421,30 @@ class RealTimeView(QWidget):
     
     # ── Worker callbacks (main thread) ───────────────────
     
-    def _on_classification_result(self, features, probs, timestamp):
-        self.emotion_probs.append(probs)
-        
-        # Send to synthesizer
-        self.synth.update_emotion(probs, timestamp)
-        
+    def _on_classification_result(self, result: EmotionResult):
+        self.emotion_probs.append(result.probs)
+
+        # Send to synthesizer — EEGTexturingEngine.process() runs inside update_emotion
+        self.synth.update_emotion(result.probs, result.timestamp, result.band_powers)
+
+        # Update Z-score plot & Asymmetry Gauge (sourced from EEGTexturingEngine)
+        if self.is_playing or self.waiting_for_worker:
+            te = self.synth.eeg_texturing_engine
+            self.zscore_plot.append_z_scores(te.last_z_scores, te.is_calibrated, te.calibration_progress)
+            self.asymmetry_gauge.set_asymmetry(result.asymmetry)
+
         n_segs = len(self.emotion_probs)
-        
+
         # Update emotion plot
         if (self.is_playing or self.waiting_for_worker) and n_segs > 0:
             probs_arr = np.array(self.emotion_probs)
             e_time = np.arange(n_segs)
-            self.emotion_plot.set_data(
-                probs_arr, e_time,
-                0,
-                e_time[-1] + 1
-            )
-        
+            self.emotion_plot.set_data(probs_arr, e_time, 0, e_time[-1] + 1)
+
         # Update status while waiting
         if self.waiting_for_worker:
-            remaining = self.total_segments_expected - n_segs
-            self.status_label.setText(
-                f"⏳ Classifying remaining segments... {n_segs}/{self.total_segments_expected} ({remaining} left)"
-            )
+            self.status_val.setText("Classifying remaining segments...")
+            self.segments_val.setText(f"{n_segs} / {self.total_segments_expected}")
     
     def _on_worker_finished(self):
         """Called when worker has drained its queue after we sent finish()."""
@@ -548,9 +470,8 @@ class RealTimeView(QWidget):
         self._on_review_mode_changed()
         
         n_segs = len(self.emotion_probs)
-        self.status_label.setText(
-            f"✓ Review mode — {n_segs} segments classified. Use controls to browse."
-        )
+        self.status_val.setText("Review Mode — use timeline to browse.")
+        self.segments_val.setText(f"{n_segs} classified")
     
     def _exit_review_mode(self):
         self.review_mode = False
@@ -636,100 +557,95 @@ class RealTimeView(QWidget):
     def _on_timer_tick(self):
         if self.current_trial_data is None or not self.is_playing:
             return
-        
         total_samples = self.current_trial_data.shape[1]
-        
-        # Sync with wall-clock to prevent drift
-        # Calculate where we SHOULD be in the data based on actual time elapsed
-        elapsed_actual = time.time() - self.playback_start_wall_time
-        target_playhead = int(elapsed_actual * self.sf * self.speed_multiplier)
-        
-        # Number of new samples to process this tick
-        n_new = target_playhead - self.playhead_idx
-        
-        # Safety clamp: process at least some, at most a reasonable chunk
-        # Increased to 20x to allow faster recovery from lag
-        n_new = max(0, min(n_new, 20 * self.samples_per_tick)) 
-        
-        if self.playhead_idx >= total_samples:
-            # EEG playback done — tell worker to drain, then wait
-            self.is_playing = False
-            self.stream_timer.stop()
-            self.waiting_for_worker = True
-            
-            self.total_segments_expected = total_samples // self.window_samples
-            n_classified = len(self.emotion_probs)
-            remaining = self.total_segments_expected - n_classified
-            
-            if remaining > 0:
-                self.status_label.setText(
-                    f"⏳ EEG done. Classifying remaining {remaining} segments..."
-                )
-                self.play_btn.setEnabled(False)
-                self.pause_btn.setEnabled(False)
-                # Send finish sentinel — worker will drain queue then emit all_done
-                self.worker.finish()
-            else:
-                # All segments already classified
-                self._on_worker_finished()
+        if self._check_playback_complete(total_samples):
             return
-
+        n_new = self._calculate_samples_to_process()
         if n_new <= 0:
             return
-        
-        # Check if we have enough data left
-        take_from_data = min(n_new, total_samples - self.playhead_idx)
-        new_data = self.current_trial_data[:, self.playhead_idx:self.playhead_idx + take_from_data]
-        self.playhead_idx += take_from_data
-        
-        # Feed into 1-second buffer
-        remaining = n_new
+        new_data = self._advance_playhead(n_new, total_samples)
+        self._feed_worker(new_data)
+        self._refresh_eeg_plot(total_samples)
+        self._refresh_dashboard(total_samples)
+
+    def _calculate_samples_to_process(self) -> int:
+        """Return wall-clock-corrected number of new samples to consume this tick."""
+        elapsed = time.time() - self.playback_start_wall_time
+        target  = int(elapsed * self.sf * self.speed_multiplier)
+        n_new   = target - self.playhead_idx
+        return max(0, min(n_new, 20 * self.samples_per_tick))
+
+    def _check_playback_complete(self, total_samples: int) -> bool:
+        """Handle end-of-trial and worker drain. Returns True when playback is done."""
+        if self.playhead_idx < total_samples:
+            return False
+        self.is_playing = False
+        self.stream_timer.stop()
+        self.waiting_for_worker = True
+        self.total_segments_expected = total_samples // self.window_samples
+        n_classified = len(self.emotion_probs)
+        remaining = self.total_segments_expected - n_classified
+        if remaining > 0:
+            self.status_val.setText("Finishing remaining classification...")
+            self.segments_val.setText(f"{n_classified} / {self.total_segments_expected}")
+            self.play_btn.setEnabled(False)
+            self.pause_btn.setEnabled(False)
+            self.worker.finish()
+        else:
+            self._on_worker_finished()
+        return True
+
+    def _advance_playhead(self, n_new: int, total_samples: int) -> np.ndarray:
+        """Slice n_new samples from the trial data and advance the playhead index."""
+        take = min(n_new, total_samples - self.playhead_idx)
+        data = self.current_trial_data[:, self.playhead_idx:self.playhead_idx + take]
+        self.playhead_idx += take
+        return data
+
+    def _feed_worker(self, new_data: np.ndarray):
+        """Fill the 1-second ring buffer and enqueue completed segments to the worker."""
+        remaining  = new_data.shape[1]
         src_offset = 0
-        
         while remaining > 0:
             space = self.window_samples - self.buffer_pos
-            take = min(remaining, space)
-            
-            self.sample_buffer[:, self.buffer_pos:self.buffer_pos + take] = new_data[:, src_offset:src_offset + take]
+            take  = min(remaining, space)
+            self.sample_buffer[:, self.buffer_pos:self.buffer_pos + take] = \
+                new_data[:, src_offset:src_offset + take]
             self.buffer_pos += take
-            src_offset += take
-            remaining -= take
-            
+            src_offset      += take
+            remaining       -= take
             if self.buffer_pos >= self.window_samples:
-                # Use current wall clock relative to playback start for synth-to-UI sync
                 seg_timestamp = (self.playhead_idx - self.window_samples) / self.sf
                 self.worker.enqueue(self.sample_buffer, seg_timestamp)
                 self.buffer_pos = 0
-        
-        # Update EEG plot with selected channels — show last 5 seconds
-        # Optimization: Only update plot every 3 ticks (~150ms) to save CPU
+
+    def _refresh_eeg_plot(self, total_samples: int):
+        """Throttled EEG waveform update — fires every 3 ticks (~150 ms)."""
         self.tick_count += 1
-        if self.tick_count % 3 == 0:
-            display_window = 5 * self.sf
-            start = max(0, self.playhead_idx - display_window)
-            end = self.playhead_idx
-            
-            time_axis = np.arange(start, end) / self.sf
-            channels = self._get_selected_channels()
-            ch_data = [(label, self.current_trial_data[idx, start:end]) for label, idx in channels]
-            
-            self.eeg_plot.set_data(
-                ch_data, time_axis,
-                f"EEG Signal — Real-Time ({self.playhead_idx / self.sf:.1f}s)"
-            )
-        
-        # Update status
-        elapsed = self.playhead_idx / self.sf
-        total = total_samples / self.sf
-        n_segs = len(self.emotion_probs)
-        dominant = ""
-        if n_segs > 0:
-            latest = self.emotion_probs[-1]
-            dominant = f" | Dominant: {self.EMOTION_LABELS[np.argmax(latest)]}"
-        
-        self.status_label.setText(
-            f"⏱ {elapsed:.1f}s / {total:.1f}s | Segments: {n_segs}{dominant}"
+        if self.tick_count % 3 != 0:
+            return
+        display_window = 5 * self.sf
+        start = max(0, self.playhead_idx - display_window)
+        time_axis = np.arange(start, self.playhead_idx) / self.sf
+        channels  = self._get_selected_channels()
+        ch_data   = [(lbl, self.current_trial_data[idx, start:self.playhead_idx])
+                     for lbl, idx in channels]
+        self.eeg_plot.set_data(
+            ch_data, time_axis,
+            f"EEG Signal — Real-Time ({self.playhead_idx / self.sf:.1f}s)"
         )
+
+    def _refresh_dashboard(self, total_samples: int):
+        """Update the time, segment-count, and dominant emotion dashboard labels."""
+        elapsed = self.playhead_idx / self.sf
+        total   = total_samples / self.sf
+        n_segs  = len(self.emotion_probs)
+        self.status_val.setText("Streaming live EEG data...")
+        self.time_val.setText(f"{elapsed:.1f}s / {total:.1f}s")
+        self.segments_val.setText(f"{n_segs} classified")
+        if n_segs > 0:
+            dom_name = self.EMOTION_LABELS[np.argmax(self.emotion_probs[-1])]
+            self.emotion_val.setText(dom_name)
 
     def _on_note_played(self, channel, pitch, velocity, start_time, duration):
         # We only really care about the total time for the piano roll to scale
@@ -759,3 +675,9 @@ class RealTimeView(QWidget):
         total_mins = int(total_s // 60)
         total_secs = int(total_s % 60)
         self.time_label.setText(f"{cur_mins:02d}:{cur_secs:02d} / {total_mins:02d}:{total_secs:02d}")
+
+    def set_model(self, model):
+        """Update the classification model."""
+        self.model = model
+        if hasattr(self, 'worker') and self.worker is not None:
+            self.worker.set_model(model)

@@ -8,367 +8,13 @@ from PyQt5.QtWidgets import (
     QGroupBox, QMessageBox, QDoubleSpinBox, QScrollBar,
     QScrollArea, QFrame
 )
-from PyQt5.QtCore import pyqtSignal, Qt, QRectF, QPointF
-from PyQt5.QtGui import QPainter, QColor, QPen, QFont, QPainterPath
+from PyQt5.QtCore import pyqtSignal, Qt
 
-# Import Model + Feat Extraction
-from src.model.signal_processing import get_de_stft, smooth_features, sf
-from src.model.emotion_classifier import EEGResNet
+from src.eeg_pipeline.signal_processing import OfflineProcessor, sf
+from src.eeg_pipeline.emotion_classifier import load_emotion_model
 from src.music.midi_generator import generate_midi_from_emotions
 from src.ui.views.music_view import MusicView
-
-
-# ──────────────────────────────────────────────────────
-# Custom QPainter Plot Widgets
-# ──────────────────────────────────────────────────────
-
-class EegPlotWidget(QWidget):
-    """Custom QPainter widget for rendering EEG signal waveforms."""
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.channels = []       # list of (label, np.array of amplitudes)
-        self.time_axis = None    # np.array of time values in seconds
-        self.title = "EEG Signal"
-        
-        # Appearance
-        self.bg_color = QColor("#1e1e2e")
-        self.grid_color = QColor("#333355")
-        self.axis_color = QColor("#888899")
-        self.label_color = QColor("#ccccdd")
-        self.channel_colors = [
-            QColor("#00FFB2"), QColor("#00AAFF"), QColor("#FF6B9D"),
-            QColor("#FFD93D"), QColor("#C084FC"), QColor("#FF8C42"),
-            QColor("#6EE7B7"), QColor("#67E8F9"), QColor("#FCA5A5"),
-            QColor("#A3E635"), QColor("#E879F9"), QColor("#FB923C"),
-        ]
-        
-        self.margin_left = 70
-        self.margin_right = 15
-        self.margin_top = 35
-        self.margin_bottom = 30
-        
-        self.setMinimumHeight(280)
-    
-    def set_data(self, channels, time_axis, title="EEG Signal"):
-        """channels: list of (label_str, amplitude_array)"""
-        self.channels = channels
-        self.time_axis = time_axis
-        self.title = title
-        self.update()
-    
-    def clear_data(self):
-        self.channels = []
-        self.time_axis = None
-        self.update()
-    
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        
-        w = self.width()
-        h = self.height()
-        
-        # Background
-        painter.fillRect(self.rect(), self.bg_color)
-        
-        plot_x = self.margin_left
-        plot_y = self.margin_top
-        plot_w = w - self.margin_left - self.margin_right
-        plot_h = h - self.margin_top - self.margin_bottom
-        
-        if plot_w <= 0 or plot_h <= 0:
-            return
-        
-        # Title
-        painter.setPen(QPen(self.label_color))
-        title_font = QFont("Sans", 11, QFont.Bold)
-        painter.setFont(title_font)
-        painter.drawText(QRectF(plot_x, 2, plot_w, self.margin_top - 4),
-                         Qt.AlignCenter | Qt.AlignVCenter, self.title)
-        
-        # Plot border
-        painter.setPen(QPen(self.grid_color, 1))
-        painter.drawRect(QRectF(plot_x, plot_y, plot_w, plot_h))
-        
-        if not self.channels or self.time_axis is None or len(self.time_axis) == 0:
-            painter.setPen(QPen(self.axis_color))
-            painter.setFont(QFont("Sans", 10))
-            painter.drawText(QRectF(plot_x, plot_y, plot_w, plot_h),
-                             Qt.AlignCenter, "No data loaded")
-            return
-        
-        t_min = float(self.time_axis[0])
-        t_max = float(self.time_axis[-1])
-        t_range = t_max - t_min if t_max > t_min else 1.0
-        
-        # Compute global data range across all channels
-        all_min = float('inf')
-        all_max = float('-inf')
-        for _, data in self.channels:
-            all_min = min(all_min, float(np.min(data)))
-            all_max = max(all_max, float(np.max(data)))
-        data_range = all_max - all_min if all_max > all_min else 1.0
-        padding = data_range * 0.05
-        all_min -= padding
-        all_max += padding
-        data_range = all_max - all_min
-        
-        # Grid lines & axis labels
-        label_font = QFont("Sans", 8)
-        painter.setFont(label_font)
-        
-        # Horizontal grid (5 lines)
-        painter.setPen(QPen(self.grid_color, 1, Qt.DashLine))
-        for i in range(6):
-            frac = i / 5.0
-            # Clinical EEG style: Negative values (all_min) plotted at the TOP
-            y = plot_y + (frac * plot_h)
-            painter.drawLine(QPointF(plot_x, y), QPointF(plot_x + plot_w, y))
-            val = all_min + frac * data_range
-            painter.setPen(QPen(self.axis_color))
-            painter.drawText(QRectF(0, y - 8, self.margin_left - 5, 16),
-                             Qt.AlignRight | Qt.AlignVCenter, f"{val:.0f}")
-            painter.setPen(QPen(self.grid_color, 1, Qt.DashLine))
-        
-        # Vertical grid (time ticks)
-        num_ticks = min(10, max(4, int(t_range)))
-        tick_step = t_range / num_ticks
-        painter.setPen(QPen(self.grid_color, 1, Qt.DashLine))
-        for i in range(num_ticks + 1):
-            t = t_min + i * tick_step
-            x = plot_x + ((t - t_min) / t_range) * plot_w
-            painter.drawLine(QPointF(x, plot_y), QPointF(x, plot_y + plot_h))
-            painter.setPen(QPen(self.axis_color))
-            painter.drawText(QRectF(x - 25, plot_y + plot_h + 2, 50, 20),
-                             Qt.AlignCenter, f"{t:.1f}s")
-            painter.setPen(QPen(self.grid_color, 1, Qt.DashLine))
-        
-        # Draw waveforms
-        painter.setClipRect(QRectF(plot_x, plot_y, plot_w, plot_h))
-        
-        # Downsample for performance if there are too many points
-        max_points = plot_w * 2  # 2 points per pixel max
-        
-        for ch_i, (label, data) in enumerate(self.channels):
-            color = self.channel_colors[ch_i % len(self.channel_colors)]
-            painter.setPen(QPen(color, 1.5))
-            
-            n = len(data)
-            step = max(1, int(n / max_points))
-            
-            path = QPainterPath()
-            first = True
-            for j in range(0, n, step):
-                t = float(self.time_axis[j])
-                v = float(data[j])
-                x = plot_x + ((t - t_min) / t_range) * plot_w
-                # Clinical EEG style: Invert Y-axis (Negative UP)
-                y = plot_y + ((v - all_min) / data_range) * plot_h
-                if first:
-                    path.moveTo(x, y)
-                    first = False
-                else:
-                    path.lineTo(x, y)
-            
-            painter.drawPath(path)
-        
-        painter.setClipping(False)
-        
-        # Y-axis label
-        painter.setPen(QPen(self.label_color))
-        painter.setFont(QFont("Sans", 9))
-        painter.save()
-        painter.translate(12, plot_y + plot_h / 2)
-        painter.rotate(-90)
-        painter.drawText(QRectF(-plot_h/2, -10, plot_h, 20), Qt.AlignCenter, "Amplitude (µV)")
-        painter.restore()
-
-
-class EmotionPlotWidget(QWidget):
-    """Custom QPainter widget for rendering emotion probability curves + playhead."""
-    
-    EMOTION_LABELS = ["Neutral", "Sad", "Fear", "Happy"]
-    EMOTION_COLORS = [
-        QColor("#67E8F9"),   # Cyan - Neutral
-        QColor("#818CF8"),   # Indigo - Sad
-        QColor("#FCA5A5"),   # Red - Fear
-        QColor("#FDE047"),   # Yellow - Happy
-    ]
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.probs = None        # shape (T, 4)
-        self.time_axis = None    # np.array of time in seconds
-        self.view_start = 0.0
-        self.view_end = 1.0
-        self.playhead_time = -1.0  # negative = hidden
-        
-        # Appearance
-        self.bg_color = QColor("#1e1e2e")
-        self.grid_color = QColor("#333355")
-        self.axis_color = QColor("#888899")
-        self.label_color = QColor("#ccccdd")
-        self.playhead_color = QColor("#ff0055")
-        
-        self.margin_left = 70
-        self.margin_right = 15
-        self.margin_top = 35
-        self.margin_bottom = 30
-        
-        self.setMinimumHeight(280)
-    
-    def set_data(self, probs, time_axis, view_start, view_end):
-        """probs: np.array (T, 4), time_axis: np.array (T,)"""
-        self.probs = probs
-        self.time_axis = time_axis
-        self.view_start = view_start
-        self.view_end = view_end
-        self.update()
-    
-    def clear_data(self):
-        self.probs = None
-        self.time_axis = None
-        self.playhead_time = -1.0
-        self.update()
-    
-    def update_playhead(self, time_s):
-        self.playhead_time = time_s
-        self.update()
-    
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        
-        w = self.width()
-        h = self.height()
-        
-        # Background
-        painter.fillRect(self.rect(), self.bg_color)
-        
-        plot_x = self.margin_left
-        plot_y = self.margin_top
-        plot_w = w - self.margin_left - self.margin_right
-        plot_h = h - self.margin_top - self.margin_bottom
-        
-        if plot_w <= 0 or plot_h <= 0:
-            return
-        
-        # Title
-        painter.setPen(QPen(self.label_color))
-        title_font = QFont("Sans", 11, QFont.Bold)
-        painter.setFont(title_font)
-        painter.drawText(QRectF(plot_x, 2, plot_w, self.margin_top - 4),
-                         Qt.AlignCenter | Qt.AlignVCenter,
-                         "Emotion Classification Probabilities")
-        
-        # Plot border
-        painter.setPen(QPen(self.grid_color, 1))
-        painter.drawRect(QRectF(plot_x, plot_y, plot_w, plot_h))
-        
-        t_min = self.view_start
-        t_max = self.view_end
-        t_range = t_max - t_min if t_max > t_min else 1.0
-        
-        # Grid & axis labels
-        label_font = QFont("Sans", 8)
-        painter.setFont(label_font)
-        
-        # Horizontal grid (probability 0..1)
-        painter.setPen(QPen(self.grid_color, 1, Qt.DashLine))
-        for i in range(6):
-            frac = i / 5.0
-            y = plot_y + plot_h - (frac * plot_h)
-            painter.drawLine(QPointF(plot_x, y), QPointF(plot_x + plot_w, y))
-            painter.setPen(QPen(self.axis_color))
-            painter.drawText(QRectF(0, y - 8, self.margin_left - 5, 16),
-                             Qt.AlignRight | Qt.AlignVCenter, f"{frac:.1f}")
-            painter.setPen(QPen(self.grid_color, 1, Qt.DashLine))
-        
-        # Vertical grid
-        num_ticks = min(10, max(4, int(t_range)))
-        tick_step = t_range / num_ticks
-        for i in range(num_ticks + 1):
-            t = t_min + i * tick_step
-            x = plot_x + ((t - t_min) / t_range) * plot_w
-            painter.drawLine(QPointF(x, plot_y), QPointF(x, plot_y + plot_h))
-            painter.setPen(QPen(self.axis_color))
-            painter.drawText(QRectF(x - 25, plot_y + plot_h + 2, 50, 20),
-                             Qt.AlignCenter, f"{t:.1f}s")
-            painter.setPen(QPen(self.grid_color, 1, Qt.DashLine))
-        
-        # Draw emotion curves
-        painter.setClipRect(QRectF(plot_x, plot_y, plot_w, plot_h))
-        
-        if self.probs is not None and self.time_axis is not None and len(self.time_axis) > 0:
-            for emotion_i in range(4):
-                color = self.EMOTION_COLORS[emotion_i]
-                painter.setPen(QPen(color, 2.0))
-                
-                path = QPainterPath()
-                first = True
-                for j in range(len(self.time_axis)):
-                    t = float(self.time_axis[j])
-                    if t < t_min or t > t_max:
-                        continue
-                    v = float(self.probs[j, emotion_i])
-                    x = plot_x + ((t - t_min) / t_range) * plot_w
-                    y = plot_y + plot_h - (v * plot_h)  # 0..1 mapped
-                    if first:
-                        path.moveTo(x, y)
-                        first = False
-                    else:
-                        path.lineTo(x, y)
-                
-                painter.drawPath(path)
-        else:
-            painter.setPen(QPen(self.axis_color))
-            painter.setFont(QFont("Sans", 10))
-            painter.drawText(QRectF(plot_x, plot_y, plot_w, plot_h),
-                             Qt.AlignCenter, "Run classification to see results")
-        
-        # Draw Playhead
-        if self.playhead_time >= t_min and self.playhead_time <= t_max:
-            px = plot_x + ((self.playhead_time - t_min) / t_range) * plot_w
-            painter.setPen(QPen(self.playhead_color, 2))
-            painter.drawLine(QPointF(px, plot_y), QPointF(px, plot_y + plot_h))
-            # Triangle marker
-            from PyQt5.QtGui import QPolygonF
-            triangle = QPolygonF([
-                QPointF(px - 6, plot_y),
-                QPointF(px + 6, plot_y),
-                QPointF(px, plot_y + 10)
-            ])
-            painter.setBrush(self.playhead_color)
-            painter.setPen(Qt.NoPen)
-            painter.drawPolygon(triangle)
-        
-        painter.setClipping(False)
-        
-        # Legend
-        legend_font = QFont("Sans", 9)
-        painter.setFont(legend_font)
-        legend_x = plot_x + plot_w - 280
-        legend_y = plot_y + 8
-        for i in range(4):
-            lx = legend_x + i * 70
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(self.EMOTION_COLORS[i])
-            painter.drawRoundedRect(QRectF(lx, legend_y, 10, 10), 2, 2)
-            painter.setPen(QPen(self.label_color))
-            painter.drawText(QRectF(lx + 13, legend_y - 2, 55, 14),
-                             Qt.AlignLeft | Qt.AlignVCenter,
-                             self.EMOTION_LABELS[i])
-        
-        # Y-axis label
-        painter.setPen(QPen(self.label_color))
-        painter.setFont(QFont("Sans", 9))
-        painter.save()
-        painter.translate(12, plot_y + plot_h / 2)
-        painter.rotate(-90)
-        painter.drawText(QRectF(-plot_h/2, -10, plot_h, 20), Qt.AlignCenter, "Probability")
-        painter.restore()
-
+from src.ui.components.eeg_plots import EegPlotWidget, EmotionPlotWidget
 
 # ──────────────────────────────────────────────────────
 # Pipeline View (rewritten without matplotlib)
@@ -393,20 +39,10 @@ class PipelineView(QWidget):
         self.loaded_file_path = ""
         
         # Load Model
-        self.model = None
-        self._load_model()
+        self.model = load_emotion_model()
+        self._offline_proc = OfflineProcessor()
         
         self._setup_ui()
-
-    def _load_model(self):
-        try:
-            self.model = EEGResNet(num_classes=4) 
-            checkpoint = torch.load("models/best_model_stft_smooth.pt", map_location=torch.device('cpu'))
-            #checkpoint = torch.load("models/best_model_modified.pt", map_location=torch.device('cpu'))
-            self.model.load_state_dict(checkpoint["model_state"])
-            self.model.eval()
-        except Exception as e:
-            print(f"Warning: Failed to load model. Ensure 'models/best_model_stft_smooth.pt' exists. Error: {e}")
 
     def _setup_ui(self):
         root_layout = QVBoxLayout(self)
@@ -531,16 +167,17 @@ class PipelineView(QWidget):
         self.eeg_plot = EegPlotWidget()
         self.eeg_plot.setFixedHeight(350)
         main_layout.addWidget(self.eeg_plot)
-        
-        self.emotion_plot = EmotionPlotWidget()
-        self.emotion_plot.setFixedHeight(280)
-        main_layout.addWidget(self.emotion_plot)
-        
-        # Horizontal Scrollbar for Time navigation
+
+        # Horizontal Scrollbar for Time navigation — lives here so it always
+        # sits directly below the EEG waveform it controls.
         self.time_scrollbar = QScrollBar(Qt.Horizontal)
         self.time_scrollbar.setMinimum(0)
         self.time_scrollbar.valueChanged.connect(self.plot_data)
         main_layout.addWidget(self.time_scrollbar)
+
+        self.emotion_plot = EmotionPlotWidget()
+        self.emotion_plot.setFixedHeight(280)
+        main_layout.addWidget(self.emotion_plot)
         
         # Add visual separator
         separator = QFrame()
@@ -630,17 +267,18 @@ class PipelineView(QWidget):
             return
             
         if self.model is None:
-            QMessageBox.warning(self, "Model Not Loaded", "Classification model could not be loaded. Please ensure models/best_model_stft_smooth.pt exists.")
+            QMessageBox.warning(self, "Model Not Loaded", "Classification model could not be loaded. Please ensure a valid checkpoint is selected in the Model Selector.")
             return
 
         try:
             self.run_pipeline_btn.setText("Processing...")
             self.run_pipeline_btn.setEnabled(False)
             # 1. Extract Features
-            features = get_de_stft(self.current_trial_data, self.segment_len, self.stft_n, self.sf)
-            
+            features          = self._offline_proc.extract_de_features(
+                self.current_trial_data, self.segment_len, self.stft_n, self.sf
+            )
             # 2. Smooth
-            smoothed_features = smooth_features(features)
+            smoothed_features = self._offline_proc.smooth(features)
             
             # 3. Predict
             # shape required: (Batch, Channels=1, H=62, W=5)
@@ -814,3 +452,7 @@ class PipelineView(QWidget):
             self.music_playhead_line.set_xdata([mapped_time_s, mapped_time_s])
             self.music_playhead_line.set_visible(True)
             self.canvas.draw_idle()
+
+    def set_model(self, model):
+        """Update the classification model."""
+        self.model = model

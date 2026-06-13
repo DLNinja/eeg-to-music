@@ -125,7 +125,12 @@ class PianoRollWidget(QWidget):
         painter.setClipping(False)
         
         # Draw Keyboard Ledger
-        painter.fillRect(0, 0, self.keyboard_width, height, QColor("#111111"))
+        is_light = self.bg_color.lightness() > 128
+        kbd_bg = QColor("#e0e0e0") if is_light else QColor("#111111")
+        border_col = QColor("#d0d0d0") if is_light else QColor("#555555")
+        text_col = QColor("#000000")
+
+        painter.fillRect(0, 0, self.keyboard_width, height, kbd_bg)
         for pitch in range(self.min_pitch, self.max_pitch + 1):
             y = height - ((pitch - self.min_pitch + 1) * note_height)
             is_black = (pitch % 12) in [1, 3, 6, 8, 10]
@@ -137,13 +142,13 @@ class PianoRollWidget(QWidget):
                 painter.fillRect(key_rect, self.white_key_color)
                 
             # Draw key border
-            painter.setPen(QPen(QColor("#555555"), 1))
+            painter.setPen(QPen(border_col, 1))
             painter.drawRect(key_rect)
             
             # C note text labels
             if pitch % 12 == 0:
                 octave = (pitch // 12) - 1
-                painter.setPen(QPen(QColor("#000000")))
+                painter.setPen(QPen(text_col))
                 font = painter.font()
                 font.setPointSize(max(5, int(note_height * 0.5)))
                 painter.setFont(font)

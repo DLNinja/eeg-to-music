@@ -124,25 +124,21 @@ class MusicView(QWidget):
         self.init_thread.wait()
 
     def _setup_ui(self):
-        self.setStyleSheet("background-color: #2b2b2b; color: #ffffff;")
-        
         main_layout = QVBoxLayout(self)
         
         top_bar = QHBoxLayout()
         
         self.back_btn = QPushButton("← Back to Menu")
-        self.back_btn.setStyleSheet("background-color: #444444; border-radius: 4px; padding: 6px 12px;")
         self.back_btn.clicked.connect(self.stop_music)
         self.back_btn.clicked.connect(self.navigate_to_home_signal.emit)
         top_bar.addWidget(self.back_btn)
         
         self.open_file_btn = QPushButton("Open MIDI File")
-        self.open_file_btn.setStyleSheet("background-color: #444444; border-radius: 4px; padding: 6px 12px;")
         self.open_file_btn.clicked.connect(self.open_file)
         top_bar.addWidget(self.open_file_btn)
         
         self.current_file_label = QLabel("No file loaded")
-        self.current_file_label.setStyleSheet("font-style: italic; color: #aaaaaa;")
+        self.current_file_label.setObjectName("subLabel")
         top_bar.addWidget(self.current_file_label)
         
         if self.embedded_mode:
@@ -152,37 +148,34 @@ class MusicView(QWidget):
             
         top_bar.addStretch()
         
-        # Style helpers
-        btn_style = "border-radius: 4px; font-weight: bold; padding: 6px 15px;"
-        
         self.skip_back_btn = QPushButton("⏪ -5s")
+        self.skip_back_btn.setObjectName("skipBtn")
         self.skip_back_btn.clicked.connect(lambda: self.seek_relative(-5.0))
         self.skip_back_btn.setEnabled(False)
-        self.skip_back_btn.setStyleSheet(f"background-color: #555555; {btn_style}")
         top_bar.addWidget(self.skip_back_btn)
         
         self.play_btn = QPushButton("▶ Play")
+        self.play_btn.setObjectName("playBtn")
         self.play_btn.clicked.connect(self.play_music)
         self.play_btn.setEnabled(False)
-        self.play_btn.setStyleSheet(f"background-color: #1a1a1a; color: #00FFB2; border: 1px solid #00FFB2; {btn_style}")
         top_bar.addWidget(self.play_btn)
         
         self.pause_btn = QPushButton("⏸ Pause")
+        self.pause_btn.setObjectName("pauseBtn")
         self.pause_btn.clicked.connect(self.toggle_pause)
         self.pause_btn.setEnabled(False)
-        self.pause_btn.setStyleSheet(f"background-color: #1a1a1a; color: #FF9800; border: 1px solid #FF9800; {btn_style}")
         top_bar.addWidget(self.pause_btn)
         
         self.stop_btn = QPushButton("■ Stop")
+        self.stop_btn.setObjectName("stopBtn")
         self.stop_btn.clicked.connect(self.stop_music)
         self.stop_btn.setEnabled(False)
-        self.stop_btn.setStyleSheet(f"background-color: #1a1a1a; color: #F44336; border: 1px solid #F44336; {btn_style}")
         top_bar.addWidget(self.stop_btn)
         
         self.skip_fwd_btn = QPushButton("⏩ +5s")
+        self.skip_fwd_btn.setObjectName("skipBtn")
         self.skip_fwd_btn.clicked.connect(lambda: self.seek_relative(5.0))
         self.skip_fwd_btn.setEnabled(False)
-        self.skip_fwd_btn.setStyleSheet(f"background-color: #555555; {btn_style}")
         top_bar.addWidget(self.skip_fwd_btn)
         
         main_layout.addLayout(top_bar)

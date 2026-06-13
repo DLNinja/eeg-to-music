@@ -1,280 +1,56 @@
 import os
-from PyQt5.QtWidgets import QMainWindow, QStackedWidget, QApplication
+from PyQt5.QtWidgets import QMainWindow, QStackedWidget, QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel
 from src.ui.views.home_view import HomeView
 from src.ui.views.plot_view import PlotView
-from src.ui.views.pipeline_view import PipelineView, EegPlotWidget, EmotionPlotWidget
+from src.ui.views.pipeline_view import PipelineView
+from src.ui.components.eeg_plots import EegPlotWidget, EmotionPlotWidget
 from src.ui.views.realtime_view import RealTimeView
 from src.ui.views.simulator_view import SimulatorView
 from src.ui.views.music_view import MusicView
+from src.ui.components.model_selector import ModelSelectorWidget
 from PyQt5.QtGui import QColor, QPalette
 from PyQt5.QtCore import Qt
-
-# ──────────────────────────────────────────────────────
-# Theme Stylesheets
-# ──────────────────────────────────────────────────────
-
-DARK_STYLESHEET = """
-    QWidget {
-        background-color: #1e1e2e;
-        color: #cdd6f4;
-        font-family: 'Segoe UI', 'Ubuntu', sans-serif;
-    }
-    QPushButton {
-        background-color: #313244;
-        color: #cdd6f4;
-        border: 1px solid #45475a;
-        border-radius: 6px;
-        padding: 6px 14px;
-    }
-    QPushButton:hover {
-        background-color: #45475a;
-        border-color: #89b4fa;
-    }
-    QPushButton:pressed {
-        background-color: #585b70;
-    }
-    QPushButton:disabled {
-        background-color: #1e1e2e;
-        color: #585b70;
-        border-color: #313244;
-    }
-    QComboBox {
-        background-color: #313244;
-        color: #cdd6f4;
-        border: 1px solid #45475a;
-        border-radius: 4px;
-        padding: 4px 8px;
-    }
-    QComboBox:hover {
-        border-color: #89b4fa;
-    }
-    QComboBox QAbstractItemView {
-        background-color: #313244;
-        color: #cdd6f4;
-        selection-background-color: #45475a;
-    }
-    QGroupBox {
-        border: 1px solid #45475a;
-        border-radius: 6px;
-        margin-top: 8px;
-        padding-top: 16px;
-        font-weight: bold;
-        color: #89b4fa;
-    }
-    QGroupBox::title {
-        subcontrol-origin: margin;
-        left: 12px;
-        padding: 0 6px;
-    }
-    QRadioButton {
-        color: #cdd6f4;
-        spacing: 5px;
-    }
-    QRadioButton::indicator {
-        width: 14px;
-        height: 14px;
-    }
-    QLabel {
-        color: #cdd6f4;
-    }
-    QScrollBar:horizontal {
-        background: #181825;
-        height: 12px;
-        border-radius: 6px;
-    }
-    QScrollBar::handle:horizontal {
-        background: #585b70;
-        border-radius: 6px;
-        min-width: 30px;
-    }
-    QScrollBar::handle:horizontal:hover {
-        background: #89b4fa;
-    }
-    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
-        width: 0;
-    }
-    QScrollBar:vertical {
-        background: #181825;
-        width: 12px;
-        border-radius: 6px;
-    }
-    QScrollBar::handle:vertical {
-        background: #585b70;
-        border-radius: 6px;
-        min-height: 30px;
-    }
-    QScrollBar::handle:vertical:hover {
-        background: #89b4fa;
-    }
-    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-        height: 0;
-    }
-    QSlider::groove:horizontal {
-        background: #313244;
-        height: 6px;
-        border-radius: 3px;
-    }
-    QSlider::handle:horizontal {
-        background: #89b4fa;
-        width: 14px;
-        height: 14px;
-        margin: -4px 0;
-        border-radius: 7px;
-    }
-    QMessageBox {
-        background-color: #1e1e2e;
-    }
-    QFrame[frameShape="4"] {
-        color: #45475a;
-    }
-"""
-
-LIGHT_STYLESHEET = """
-    QWidget {
-        background-color: #f5f5f5;
-        color: #1e1e2e;
-        font-family: 'Segoe UI', 'Ubuntu', sans-serif;
-    }
-    QPushButton {
-        background-color: #ffffff;
-        color: #1e1e2e;
-        border: 1px solid #d0d0d0;
-        border-radius: 6px;
-        padding: 6px 14px;
-    }
-    QPushButton:hover {
-        background-color: #e8e8e8;
-        border-color: #4a7dff;
-    }
-    QPushButton:pressed {
-        background-color: #d5d5d5;
-    }
-    QPushButton:disabled {
-        background-color: #f0f0f0;
-        color: #b0b0b0;
-        border-color: #e0e0e0;
-    }
-    QComboBox {
-        background-color: #ffffff;
-        color: #1e1e2e;
-        border: 1px solid #d0d0d0;
-        border-radius: 4px;
-        padding: 4px 8px;
-    }
-    QComboBox:hover {
-        border-color: #4a7dff;
-    }
-    QComboBox QAbstractItemView {
-        background-color: #ffffff;
-        color: #1e1e2e;
-        selection-background-color: #e0e7ff;
-    }
-    QGroupBox {
-        border: 1px solid #d0d0d0;
-        border-radius: 6px;
-        margin-top: 8px;
-        padding-top: 16px;
-        font-weight: bold;
-        color: #4a7dff;
-    }
-    QGroupBox::title {
-        subcontrol-origin: margin;
-        left: 12px;
-        padding: 0 6px;
-    }
-    QRadioButton {
-        color: #1e1e2e;
-        spacing: 5px;
-    }
-    QRadioButton::indicator {
-        width: 14px;
-        height: 14px;
-    }
-    QLabel {
-        color: #1e1e2e;
-    }
-    QScrollBar:horizontal {
-        background: #e8e8e8;
-        height: 12px;
-        border-radius: 6px;
-    }
-    QScrollBar::handle:horizontal {
-        background: #b0b0b0;
-        border-radius: 6px;
-        min-width: 30px;
-    }
-    QScrollBar::handle:horizontal:hover {
-        background: #4a7dff;
-    }
-    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
-        width: 0;
-    }
-    QScrollBar:vertical {
-        background: #e8e8e8;
-        width: 12px;
-        border-radius: 6px;
-    }
-    QScrollBar::handle:vertical {
-        background: #b0b0b0;
-        border-radius: 6px;
-        min-height: 30px;
-    }
-    QScrollBar::handle:vertical:hover {
-        background: #4a7dff;
-    }
-    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-        height: 0;
-    }
-    QSlider::groove:horizontal {
-        background: #d0d0d0;
-        height: 6px;
-        border-radius: 3px;
-    }
-    QSlider::handle:horizontal {
-        background: #4a7dff;
-        width: 14px;
-        height: 14px;
-        margin: -4px 0;
-        border-radius: 7px;
-    }
-    QMessageBox {
-        background-color: #f5f5f5;
-    }
-    QFrame[frameShape="4"] {
-        color: #d0d0d0;
-    }
-"""
-
-# QPainter color palettes for plot widgets
-DARK_PLOT_COLORS = {
-    "bg": QColor("#1e1e2e"),
-    "grid": QColor("#333355"),
-    "axis": QColor("#888899"),
-    "label": QColor("#ccccdd"),
-}
-
-LIGHT_PLOT_COLORS = {
-    "bg": QColor("#ffffff"),
-    "grid": QColor("#e0e0e0"),
-    "axis": QColor("#666666"),
-    "label": QColor("#1e1e2e"),
-}
-
-
+from src.ui.theme_config import THEME_CONFIGS
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("EEG to Music App")
-        self.resize(1000, 600)
+        self.resize(1000, 650)
         self.current_theme = "dark"
 
-        self._setup_stacked_widget()
+        self._setup_ui_layout()
         self._apply_theme("dark")
+        self._load_initial_model()
 
-    def _setup_stacked_widget(self):
+    def _setup_ui_layout(self):
+        self.central_area = QWidget()
+        self.setCentralWidget(self.central_area)
+        main_layout = QVBoxLayout(self.central_area)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Create settings bar header
+        self.settings_header = QWidget()
+        self.settings_header.setObjectName("topSettingsBar")
+        header_layout = QHBoxLayout(self.settings_header)
+        header_layout.setContentsMargins(15, 6, 15, 6)
+        header_layout.setSpacing(15)
+
+        title_lbl = QLabel("ACTIVE MODEL CONFIGURATION")
+        title_lbl.setObjectName("settingsBarTitle")
+        header_layout.addWidget(title_lbl)
+
+        self.model_selector = ModelSelectorWidget()
+        self.model_selector.model_loaded.connect(self._on_model_loaded)
+        header_layout.addWidget(self.model_selector)
+        header_layout.addStretch()
+
+        main_layout.addWidget(self.settings_header)
+
+        # Stacked widget for pages
         self.stacked_widget = QStackedWidget()
-        self.setCentralWidget(self.stacked_widget)
+        main_layout.addWidget(self.stacked_widget)
         
         self.home_view = HomeView()
         self.plot_view = PlotView()
@@ -290,7 +66,6 @@ class MainWindow(QMainWindow):
         self.stacked_widget.addWidget(self.music_view)
         self.stacked_widget.addWidget(self.realtime_view)
         self.stacked_widget.addWidget(self.simulator_view)
-
         
         # Connect navigation signals
         self.home_view.navigate_to_plot_signal.connect(self.show_plot_view)
@@ -305,74 +80,90 @@ class MainWindow(QMainWindow):
         self.realtime_view.navigate_to_home_signal.connect(self.show_home_view)
         self.simulator_view.navigate_to_home_signal.connect(self.show_home_view)
         
+        # Listen to page change to show/hide settings bar
+        self.stacked_widget.currentChanged.connect(self._on_page_changed)
+        
         # Show HomeView initially
         self.stacked_widget.setCurrentWidget(self.home_view)
+        self._on_page_changed(0)
+
+    def _load_initial_model(self):
+        from src.eeg_pipeline.emotion_classifier import load_emotion_model
+        arch = self.model_selector.arch_combo.currentText()
+        chk = self.model_selector.checkpoint_combo.currentText()
+        if arch and chk:
+            chk_path = os.path.join("models/classifiers", arch, chk)
+            model = load_emotion_model(model_path=chk_path, arch_name=arch)
+            if model is not None:
+                self._on_model_loaded(model, arch, chk_path)
+
+    def _on_model_loaded(self, model, arch_name, checkpoint_path):
+        """Propagate loaded model to all classification views."""
+        self.pipeline_view.set_model(model)
+        self.realtime_view.set_model(model)
+        self.simulator_view.set_model(model)
+
+    def _on_page_changed(self, index):
+        current_widget = self.stacked_widget.currentWidget()
+        show_selector = isinstance(current_widget, (PipelineView, RealTimeView, SimulatorView))
+        self.settings_header.setVisible(show_selector)
 
     def _apply_theme(self, theme_name):
         self.current_theme = theme_name
-        app = QApplication.instance()
+        cfg = THEME_CONFIGS.get(theme_name, THEME_CONFIGS["dark"])
         
+        self.setStyleSheet(cfg["stylesheet"])
+        self.music_view.setStyleSheet(cfg["music_style"])
+        if hasattr(self.pipeline_view, 'music_view'):
+            self.pipeline_view.music_view.setStyleSheet(cfg["music_style"])
+            
         palette = QPalette()
+        for role, color in cfg["palette"].items():
+            palette.setColor(role, color)
+        QApplication.instance().setPalette(palette)
         
-        if theme_name == "dark":
-            self.setStyleSheet(DARK_STYLESHEET)
-            plot_colors = DARK_PLOT_COLORS
-            
-            # Dark palette for Fusion-drawn elements (arrows, indicators)
-            palette.setColor(QPalette.Window, QColor("#1e1e2e"))
-            palette.setColor(QPalette.WindowText, QColor("#cdd6f4"))
-            palette.setColor(QPalette.Base, QColor("#313244"))
-            palette.setColor(QPalette.AlternateBase, QColor("#45475a"))
-            palette.setColor(QPalette.Text, QColor("#cdd6f4"))
-            palette.setColor(QPalette.Button, QColor("#45475a"))
-            palette.setColor(QPalette.ButtonText, QColor("#ffffff"))
-            palette.setColor(QPalette.Highlight, QColor("#89b4fa"))
-            palette.setColor(QPalette.HighlightedText, QColor("#1e1e2e"))
-            palette.setColor(QPalette.Light, QColor("#cdd6f4"))
-            palette.setColor(QPalette.Mid, QColor("#585b70"))
-            palette.setColor(QPalette.Dark, QColor("#181825"))
-            
-            self.music_view.setStyleSheet("background-color: #1e1e2e; color: #cdd6f4;")
-            if hasattr(self.pipeline_view, 'music_view'):
-                self.pipeline_view.music_view.setStyleSheet("background-color: #1e1e2e; color: #cdd6f4;")
-        else:
-            self.setStyleSheet(LIGHT_STYLESHEET)
-            plot_colors = LIGHT_PLOT_COLORS
-            
-            # Light palette
-            palette.setColor(QPalette.Window, QColor("#f5f5f5"))
-            palette.setColor(QPalette.WindowText, QColor("#1e1e2e"))
-            palette.setColor(QPalette.Base, QColor("#ffffff"))
-            palette.setColor(QPalette.AlternateBase, QColor("#e8e8e8"))
-            palette.setColor(QPalette.Text, QColor("#1e1e2e"))
-            palette.setColor(QPalette.Button, QColor("#e0e0e0"))
-            palette.setColor(QPalette.ButtonText, QColor("#000000"))
-            palette.setColor(QPalette.Highlight, QColor("#4a7dff"))
-            palette.setColor(QPalette.HighlightedText, QColor("#ffffff"))
-            palette.setColor(QPalette.Light, QColor("#ffffff"))
-            palette.setColor(QPalette.Mid, QColor("#b0b0b0"))
-            palette.setColor(QPalette.Dark, QColor("#808080"))
-            
-            self.music_view.setStyleSheet("background-color: #ffffff; color: #1e1e2e;")
-            if hasattr(self.pipeline_view, 'music_view'):
-                self.pipeline_view.music_view.setStyleSheet("background-color: #ffffff; color: #1e1e2e;")
-        
-        app.setPalette(palette)
-        
-        # Update QPainter plot widgets
+        # Update QPainter plot and custom widgets
+        plot_colors = cfg["plot_colors"]
         self._apply_plot_colors(self.plot_view.eeg_plot, plot_colors)
+        
         self._apply_plot_colors(self.pipeline_view.eeg_plot, plot_colors)
         self._apply_plot_colors(self.pipeline_view.emotion_plot, plot_colors)
+        if hasattr(self.pipeline_view, 'music_view') and hasattr(self.pipeline_view.music_view, 'piano_roll'):
+            self._apply_plot_colors(self.pipeline_view.music_view.piano_roll, plot_colors)
+        
         self._apply_plot_colors(self.realtime_view.eeg_plot, plot_colors)
         self._apply_plot_colors(self.realtime_view.emotion_plot, plot_colors)
+        if hasattr(self.realtime_view, 'zscore_plot'):
+            self._apply_plot_colors(self.realtime_view.zscore_plot, plot_colors)
+        if hasattr(self.realtime_view, 'asymmetry_gauge'):
+            self._apply_plot_colors(self.realtime_view.asymmetry_gauge, plot_colors)
+        if hasattr(self.realtime_view, 'piano_roll'):
+            self._apply_plot_colors(self.realtime_view.piano_roll, plot_colors)
+            
         self._apply_plot_colors(self.simulator_view.eeg_plot, plot_colors)
         self._apply_plot_colors(self.simulator_view.emotion_plot, plot_colors)
+        if hasattr(self.simulator_view, 'zscore_plot'):
+            self._apply_plot_colors(self.simulator_view.zscore_plot, plot_colors)
+        if hasattr(self.simulator_view, 'asymmetry_gauge'):
+            self._apply_plot_colors(self.simulator_view.asymmetry_gauge, plot_colors)
+        if hasattr(self.simulator_view, 'piano_roll'):
+            self._apply_plot_colors(self.simulator_view.piano_roll, plot_colors)
+            
+        if hasattr(self.music_view, 'piano_roll'):
+            self._apply_plot_colors(self.music_view.piano_roll, plot_colors)
 
     def _apply_plot_colors(self, widget, colors):
+        if widget is None:
+            return
         widget.bg_color = colors["bg"]
-        widget.grid_color = colors["grid"]
-        widget.axis_color = colors["axis"]
-        widget.label_color = colors["label"]
+        if hasattr(widget, "grid_color"):
+            widget.grid_color = colors["grid"]
+        if hasattr(widget, "axis_color"):
+            widget.axis_color = colors["axis"]
+        if hasattr(widget, "label_color"):
+            widget.label_color = colors["label"]
+        if hasattr(widget, "border_color"):
+            widget.border_color = colors["grid"]
         widget.update()
 
     def show_plot_view(self):
@@ -393,3 +184,32 @@ class MainWindow(QMainWindow):
     
     def show_home_view(self):
         self.stacked_widget.setCurrentWidget(self.home_view)
+
+    def closeEvent(self, event):
+        # Stop simulator view worker thread and synthesizer
+        if hasattr(self, 'simulator_view') and self.simulator_view is not None:
+            try:
+                if hasattr(self.simulator_view, 'worker_thread') and self.simulator_view.worker_thread.isRunning():
+                    if hasattr(self.simulator_view, 'worker') and self.simulator_view.worker is not None:
+                        self.simulator_view.worker.stop()
+                    self.simulator_view.worker_thread.quit()
+                    self.simulator_view.worker_thread.wait(1000)
+                if hasattr(self.simulator_view, 'synth') and self.simulator_view.synth is not None:
+                    self.simulator_view.synth.stop()
+            except Exception as e:
+                print(f"Error cleaning up simulator view threads: {e}")
+                
+        # Stop realtime view worker thread and synthesizer
+        if hasattr(self, 'realtime_view') and self.realtime_view is not None:
+            try:
+                if hasattr(self.realtime_view, 'worker_thread') and self.realtime_view.worker_thread.isRunning():
+                    if hasattr(self.realtime_view, 'worker') and self.realtime_view.worker is not None:
+                        self.realtime_view.worker.stop()
+                    self.realtime_view.worker_thread.quit()
+                    self.realtime_view.worker_thread.wait(1000)
+                if hasattr(self.realtime_view, 'synth') and self.realtime_view.synth is not None:
+                    self.realtime_view.synth.stop()
+            except Exception as e:
+                print(f"Error cleaning up realtime view threads: {e}")
+                
+        event.accept()

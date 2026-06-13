@@ -12,6 +12,7 @@ from src.music.midi_generator import (
 )
 from src.music.emotion_tracker import EmotionTracker
 from src.music.markov_engine import MarkovEngine
+from src.eeg_pipeline.eeg_texturing_engine import EEGTexturingEngine
 
 class SuppressStderr:
     """Context manager to suppress C-level audio driver warnings"""
@@ -71,8 +72,12 @@ class RealTimeMusicSynthesizer(QThread):
         
         self.tracker = EmotionTracker(window_size=10, spike_threshold=0.3)
         self.markov_engine = MarkovEngine()
+        self.eeg_texturing_engine = EEGTexturingEngine()
         self.prev_melody_interval = 0
         self.synth = None
+
+        # Latest band powers (updated each second, used by texturing)
+        self.current_band_powers = {}
 
         # Phase 3A: Anti-trill tracker
         self.consecutive_trill_count = 0
@@ -130,13 +135,21 @@ class RealTimeMusicSynthesizer(QThread):
             print(f"[RealTimeSynth] Error: Failed to initialize FluidSynth: {e}")
             self.synth = None
 
-    def update_emotion(self, probs, timestamp):
+    def update_emotion(self, probs, timestamp, band_powers=None):
+        """Receive a new 1-second classification result.
+
+        Drives EEGTexturingEngine.process() so Z-score baseline, per-band scalars,
+        and trend history are all updated in one call on the main thread.
+        """
         with QMutexLocker(self.mutex):
-            # Update the continuous V-A tracker
             dominant_idx = int(np.argmax(probs))
             confidence = float(probs[dominant_idx])
             self.tracker.update_from_discrete(dominant_idx, confidence)
-            
+
+            if band_powers is not None:
+                self.current_band_powers = band_powers
+                self.eeg_texturing_engine.process(band_powers)
+
             self.update_queue.append((probs, timestamp))
 
     def play(self):
@@ -178,6 +191,25 @@ class RealTimeMusicSynthesizer(QThread):
         self.playback_start_time = 0.0
         self._all_notes_off()
         self.wait()
+
+    def _apply_eeg_texturing(self, emotion_label):
+        """Delegate CC mapping to EEGTexturingEngine.
+
+        Copies band_z_scalars and asymmetry under the mutex (thread-safe
+        snapshot) then calls apply_cc() outside the lock.
+        """
+        if not self.synth:
+            return
+        with QMutexLocker(self.mutex):
+            band_z_scalars = dict(self.eeg_texturing_engine.band_z_scalars)
+            asymmetry      = float(self.current_band_powers.get('asymmetry', 0.0))
+
+        self.eeg_texturing_engine.apply_cc(
+            emotion_label  = emotion_label,
+            band_z_scalars = band_z_scalars,
+            asymmetry      = asymmetry,
+            synth          = self.synth,
+        )
 
     def _all_notes_off(self):
         if not self.synth: return
@@ -226,6 +258,9 @@ class RealTimeMusicSynthesizer(QThread):
 
                 if state:
                     p, ts = state
+                    # Catch up if the playback clock fell behind the real current time
+                    if playback_clock < now:
+                        playback_clock = now
                     # Schedule current chunk relative to our internal playback clock
                     self._generate_and_schedule_1s_chunk(p, playback_clock, ts)
                     playback_clock += 1.0 # clock advances by 1s
@@ -390,6 +425,9 @@ class RealTimeMusicSynthesizer(QThread):
         alpha = 0.3 + 0.5 * min(1.0, abs(micro_a))  # 0.3 (smooth) → 0.8 (abrupt)
         self.current_bpm = (1.0 - alpha) * self.current_bpm + alpha * target_bpm
         sec_per_beat = 60.0 / self.current_bpm
+
+        # ── 3b. EEG TEXTURING (band power Z-scores -> MIDI CCs) ──
+        self._apply_eeg_texturing(emotion_cat)
 
         # ── 4. VELOCITY (MACRO BASE + MICRO INTENSITY BOOST) ──
         # Base from MACRO arousal (30–110), boosted by MICRO arousal magnitude.

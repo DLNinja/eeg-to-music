@@ -3,10 +3,7 @@ import sys
 import math
 import numpy as np
 import torch
-import socket
-import struct
 import scipy.signal
-from queue import Queue
 from collections import deque
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, 
@@ -14,195 +11,27 @@ from PyQt5.QtWidgets import (
     QRadioButton, QDoubleSpinBox, QScrollBar, QSpinBox, QLineEdit, QCheckBox,
     QScrollArea
 )
-from PyQt5.QtCore import pyqtSignal, Qt, QTimer, QThread, QObject
+from PyQt5.QtCore import pyqtSignal, Qt, QTimer, QThread
 from PyQt5.QtGui import QIntValidator
 
-from src.model.signal_processing import (
-    sf, n_channels, bands,
-    create_bandpass_filter, filter_segment,
-    extract_single_window_features, smooth_features, moving_average
-)
-from src.model.emotion_classifier import EEGResNet
-from src.ui.views.pipeline_view import EegPlotWidget, EmotionPlotWidget
+from src.eeg_pipeline.signal_processing import sf, n_channels
+from src.eeg_pipeline.emotion_classifier import load_emotion_model
+from src.eeg_pipeline.classification_worker import ClassificationWorker
+from src.eeg_pipeline.emotion_result import EmotionResult
+from src.ui.components.eeg_plots import EegPlotWidget, EmotionPlotWidget, BandZScorePlotWidget, AsymmetryGaugeWidget
 from src.ui.components.piano_roll import PianoRollWidget
+from src.ui.components.channel_selector import ChannelSelectorWidget
+from src.ui.components.data_stream import (
+    DataStreamThread,
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    DEFAULT_CHANNELS,
+    DEFAULT_SAMPLE_RATE,
+    DEFAULT_UV_TO_BITS,
+    DEFAULT_BYTES_PER_SAMPLE,
+    DEFAULT_SAMPLES_PER_PACKET
+)
 from src.music.realtime_generator import RealTimeMusicSynthesizer
-
-# Default values (used as UI defaults, can be changed by user)
-DEFAULT_HOST = '127.0.0.1' #'127.0.0.1''192.168.100.213'
-DEFAULT_PORT = 8888
-DEFAULT_CHANNELS = 64
-DEFAULT_SAMPLE_RATE = 256
-
-# BioSemi ADC resolution: 1 bit = 31.25 nV = 0.03125 µV
-# So 1 µV = 1 / 0.03125 = 32 bits
-DEFAULT_UV_TO_BITS = 32
-DEFAULT_BYTES_PER_SAMPLE = 3  # 24-bit samples
-DEFAULT_SAMPLES_PER_PACKET = 2  # BioSemi sends multiple samples per TCP packet
-
-# ──────────────────────────────────────────────────────
-# Data Stream Thread
-# ──────────────────────────────────────────────────────
-
-class DataStreamThread(QThread):
-    """
-    Background thread to listen to the TCP socket continuously
-    without blocking the GUI main loop.
-    Decodes BioSemi ActiveView 24-bit LE signed integer format.
-    """
-    new_data_signal = pyqtSignal(list)
-    error_signal = pyqtSignal(str)
-    disconnected_signal = pyqtSignal()
-
-    def __init__(self, host, port, channels, bytes_per_sample, uv_to_bits, samples_per_packet):
-        super().__init__()
-        self.host = host
-        self.port = port
-        self.channels = channels
-        self.bytes_per_sample = bytes_per_sample
-        self.samples_per_packet = samples_per_packet
-        self.packet_size = channels * bytes_per_sample * samples_per_packet
-        self.running = False
-        self.sock = None
-        self.bits_to_uv = 0.03125
-
-    def recvall(self, n):
-        data = bytearray()
-        while len(data) < n and self.running:
-            try:
-                packet = self.sock.recv(n - len(data))
-                if not packet:
-                    return None
-                data.extend(packet)
-            except Exception:
-                return None
-        return data
-
-    def run(self):
-        self.running = True
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.settimeout(2.0)
-        
-        try:
-            self.sock.connect((self.host, self.port))
-        except Exception as e:
-            self.error_signal.emit(f"Failed to connect: {e}")
-            self.running = False
-            return
-
-        while self.running:
-            try:
-                raw_data = self.recvall(self.packet_size)
-                
-                if not self.running:
-                    break
-                    
-                if not raw_data:
-                    self.disconnected_signal.emit()
-                    self.running = False
-                    break
-                    
-                all_samples = []
-                sample_stride = self.channels * self.bytes_per_sample
-                for s in range(self.samples_per_packet):
-                    sample_offset = s * sample_stride
-                    values = []
-                    for ch in range(self.channels):
-                        offset = sample_offset + ch * self.bytes_per_sample
-                        sample_bytes = raw_data[offset: offset + self.bytes_per_sample]
-                        raw_int = int.from_bytes(sample_bytes, byteorder='little', signed=True)
-                        uv_value = float(raw_int) * self.bits_to_uv
-                        values.append(uv_value)
-                    all_samples.append(values)
-                self.new_data_signal.emit(all_samples)
-            except socket.timeout:
-                continue
-            except Exception as e:
-                if self.running:
-                    self.error_signal.emit(f"Connection error: {e}")
-                self.running = False
-                break
-                
-        self.sock.close()
-
-    def stop(self):
-        self.running = False
-        if self.sock:
-            try:
-                self.sock.shutdown(socket.SHUT_RDWR)
-            except Exception:
-                pass
-
-# ──────────────────────────────────────────────────────
-# Background classification worker
-# ──────────────────────────────────────────────────────
-
-class ClassificationWorker(QObject):
-    """Runs filter → features → smooth → classify in a background thread."""
-    result_ready = pyqtSignal(object, object)  # (features_62x5, probs_4)
-    
-    def __init__(self, sos, zi_template, model, stft_n, sample_rate):
-        super().__init__()
-        self.sos = sos
-        self._zi_template = zi_template
-        self.model = model
-        self.stft_n = stft_n
-        self.sf = sample_rate
-        
-        self._queue = Queue()
-        self._running = False
-        
-        self.filter_zi = None
-        self.raw_features = []
-    
-    def reset(self):
-        n_sections = self._zi_template.shape[0]
-        self.filter_zi = np.zeros((n_channels, n_sections, 2))
-        for ch in range(n_channels):
-            self.filter_zi[ch] = self._zi_template.copy()
-        self.raw_features = []
-        while not self._queue.empty():
-            try: self._queue.get_nowait()
-            except: break
-    
-    def enqueue(self, segment):
-        self._queue.put(("segment", segment.copy()))
-    
-    def stop(self):
-        self._running = False
-        self._queue.put(("stop", None))
-        
-    def is_empty(self):
-        return self._queue.empty()
-    
-    def run(self):
-        self._running = True
-        while self._running:
-            item = self._queue.get()
-            tag, data = item
-            if tag == "stop":
-                break
-            elif tag == "segment":
-                self._process(data)
-    
-    def _process(self, segment):
-        filtered, self.filter_zi = filter_segment(segment, self.sos, self.filter_zi)
-        features = extract_single_window_features(filtered, self.stft_n, self.sf)
-        self.raw_features.append(features)
-        
-        features_arr = np.array(self.raw_features)
-        T = features_arr.shape[0]
-        window = min(5, T)
-        smoothed = features_arr[max(0, T-window):T].mean(axis=0)
-        
-        if self.model is not None:
-            input_tensor = torch.tensor(smoothed, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
-            with torch.no_grad():
-                output = self.model(input_tensor)
-            probs = torch.nn.functional.softmax(output, dim=1).numpy()[0]
-        else:
-            probs = np.array([0.25, 0.25, 0.25, 0.25])
-        
-        self.result_ready.emit(features, probs)
 
 
 # ──────────────────────────────────────────────────────
@@ -250,18 +79,13 @@ class SimulatorView(QWidget):
         self.ui_timer = QTimer(self)
         self.ui_timer.timeout.connect(self._update_gui_plot)
         
-        self.model = None
-        self._load_model()
-        
-        self.sos, self._zi_template = create_bandpass_filter(self.sf, 0.1, 75.0)
+        self.model = load_emotion_model()
         
         self.worker_thread = QThread()
-        self.worker = ClassificationWorker(
-            self.sos, self._zi_template, self.model, self.stft_n, self.sf
-        )
+        self.worker = ClassificationWorker(self.model, self.stft_n, self.sf)
         self.worker.moveToThread(self.worker_thread)
         self.worker_thread.started.connect(self.worker.run)
-        self.worker.result_ready.connect(self._on_classification_result)
+        self.worker.thread_result.connect(self._on_classification_result)
         
         self.stream_thread = None
         
@@ -273,14 +97,7 @@ class SimulatorView(QWidget):
         
         self._setup_ui()
     
-    def _load_model(self):
-        try:
-            self.model = EEGResNet(num_classes=4)
-            checkpoint = torch.load("models/best_model_stft_smooth.pt", map_location=torch.device('cpu'))
-            self.model.load_state_dict(checkpoint["model_state"])
-            self.model.eval()
-        except Exception as e:
-            print(f"Warning: Failed to load model: {e}")
+
     
     def _setup_ui(self):
         root_layout = QVBoxLayout(self)
@@ -311,10 +128,6 @@ class SimulatorView(QWidget):
         top_bar.addWidget(title_lbl)
         
         top_bar.addStretch()
-        
-        self.status_lbl = QLabel("Status: Disconnected")
-        self.status_lbl.setFont(font)
-        top_bar.addWidget(self.status_lbl)
         
         main_layout.addLayout(top_bar)
         
@@ -426,6 +239,56 @@ class SimulatorView(QWidget):
         controls_bar.addStretch()
         main_layout.addLayout(controls_bar)
         
+        # ── Dashboard Cards Row (Fixed-width boxes to prevent any UI movement) ──
+        dashboard_layout = QHBoxLayout()
+        
+        # 1. Pipeline Status Card (Stretches)
+        self.status_card = QWidget()
+        self.status_card.setObjectName("dashboardCard")
+        status_card_layout = QVBoxLayout(self.status_card)
+        status_card_layout.setContentsMargins(8, 4, 8, 4)
+        status_title = QLabel("System Status")
+        status_title.setObjectName("cardTitle")
+        self.status_val = QLabel("Disconnected")
+        self.status_val.setObjectName("cardValue")
+        self.status_val.setWordWrap(True)
+        status_card_layout.addWidget(status_title)
+        status_card_layout.addWidget(self.status_val)
+        dashboard_layout.addWidget(self.status_card, stretch=2)
+        
+        # 2. Segments Classified Card (Fixed Width)
+        self.segments_card = QWidget()
+        self.segments_card.setFixedWidth(140)
+        self.segments_card.setObjectName("dashboardCard")
+        segments_card_layout = QVBoxLayout(self.segments_card)
+        segments_card_layout.setContentsMargins(8, 4, 8, 4)
+        segments_title = QLabel("EEG Segments")
+        segments_title.setObjectName("cardTitle")
+        self.segments_val = QLabel("0 classified")
+        self.segments_val.setObjectName("cardValue")
+        self.segments_val.setAlignment(Qt.AlignCenter)
+        segments_card_layout.addWidget(segments_title)
+        segments_card_layout.addWidget(self.segments_val)
+        dashboard_layout.addWidget(self.segments_card)
+        
+        # 3. Emotion Card (Fixed Width)
+        self.emotion_card = QWidget()
+        self.emotion_card.setFixedWidth(160)
+        self.emotion_card.setObjectName("dashboardCard")
+        emotion_card_layout = QVBoxLayout(self.emotion_card)
+        emotion_card_layout.setContentsMargins(8, 4, 8, 4)
+        emotion_title = QLabel("Dominant Emotion")
+        emotion_title.setObjectName("cardTitle")
+        self.emotion_val = QLabel("—")
+        self.emotion_val.setObjectName("cardValue")
+        self.emotion_val.setAlignment(Qt.AlignCenter)
+        emotion_card_layout.addWidget(emotion_title)
+        emotion_card_layout.addWidget(self.emotion_val)
+        dashboard_layout.addWidget(self.emotion_card)
+        
+        dashboard_layout.setSpacing(10)
+        main_layout.addLayout(dashboard_layout)
+        
         # ── Music controls ──
         music_bar = QHBoxLayout()
         music_bar.addWidget(QLabel("🔈"))
@@ -444,36 +307,9 @@ class SimulatorView(QWidget):
         main_layout.addLayout(music_bar)
         
         # ── Channel selection ──
-        ch_bar = QHBoxLayout()
-        ch_bar.addWidget(QLabel("Channels:"))
-        
-        self.channel_mode_combo = QComboBox()
-        self.channel_mode_combo.addItems(["Single Channel", "Channel Range", "All Channels"])
-        self.channel_mode_combo.currentIndexChanged.connect(self._on_channel_mode_changed)
-        ch_bar.addWidget(self.channel_mode_combo)
-        
-        self.label_ch_from = QLabel("Ch:")
-        ch_bar.addWidget(self.label_ch_from)
-        self.spin_ch_from = QSpinBox()
-        self.spin_ch_from.setRange(1, 256)
-        self.spin_ch_from.setValue(1)
-        self.spin_ch_from.valueChanged.connect(self._on_channel_changed)
-        ch_bar.addWidget(self.spin_ch_from)
-        
-        self.label_ch_to = QLabel("to:")
-        ch_bar.addWidget(self.label_ch_to)
-        self.spin_ch_to = QSpinBox()
-        self.spin_ch_to.setRange(1, 256)
-        self.spin_ch_to.setValue(5)
-        self.spin_ch_to.valueChanged.connect(self._on_channel_changed)
-        ch_bar.addWidget(self.spin_ch_to)
-        
-        # Init visibility for single channel mode
-        self.label_ch_to.setVisible(False)
-        self.spin_ch_to.setVisible(False)
-        
-        ch_bar.addStretch()
-        main_layout.addLayout(ch_bar)
+        self.channel_selector = ChannelSelectorWidget(max_channels=n_channels)
+        self.channel_selector.selection_changed.connect(self._on_channel_changed)
+        main_layout.addWidget(self.channel_selector)
         
         # ── Review controls (hidden during streaming) ──
         self.review_widget = QWidget()
@@ -511,13 +347,16 @@ class SimulatorView(QWidget):
         self.eeg_plot.setFixedHeight(250)
         main_layout.addWidget(self.eeg_plot)
         
-        self.downsampled_plot = EegPlotWidget()
-        self.downsampled_plot.setFixedHeight(250)
-        main_layout.addWidget(self.downsampled_plot)
-        
         self.emotion_plot = EmotionPlotWidget()
         self.emotion_plot.setFixedHeight(280)
         main_layout.addWidget(self.emotion_plot)
+        
+        self.asymmetry_gauge = AsymmetryGaugeWidget()
+        main_layout.addWidget(self.asymmetry_gauge)
+        
+        self.zscore_plot = BandZScorePlotWidget()
+        self.zscore_plot.setFixedHeight(250)
+        main_layout.addWidget(self.zscore_plot)
         
         # ── Piano Roll ──
         self.piano_roll = PianoRollWidget()
@@ -571,35 +410,8 @@ class SimulatorView(QWidget):
     # ── Channel helpers ──────────────────────────────────
     
     def _get_selected_channels(self):
-        """Return list of (label, data_row_index) based on current channel selection."""
-        mode = self.channel_mode_combo.currentIndex()
-        if mode == 0:  # Single
-            ch = self.spin_ch_from.value() - 1
-            if ch < self.display_channels:
-                return [(f"Ch {ch+1}", ch)]
-            return []
-        elif mode == 1:  # Range
-            ch_from = self.spin_ch_from.value() - 1
-            ch_to = self.spin_ch_to.value() - 1
-            if ch_from > ch_to:
-                ch_from, ch_to = ch_to, ch_from
-            return [(f"Ch {i+1}", i) for i in range(ch_from, min(ch_to + 1, self.display_channels))]
-        else:  # All
-            return [(f"Ch {i+1}", i) for i in range(self.display_channels)]
+        return self.channel_selector.get_selected_channels(self.display_channels)
     
-    def _on_channel_mode_changed(self, index):
-        is_range = (index == 1)
-        is_all = (index == 2)
-        
-        self.label_ch_from.setVisible(not is_all)
-        self.spin_ch_from.setVisible(not is_all)
-        self.label_ch_to.setVisible(is_range)
-        self.spin_ch_to.setVisible(is_range)
-        self.label_ch_from.setText("Ch:" if not is_range else "From:")
-        
-        if self.review_mode:
-            self._update_review_plots()
-            
     def _on_channel_changed(self):
         if self.review_mode:
             self._update_review_plots()
@@ -632,7 +444,8 @@ class SimulatorView(QWidget):
         
         # Clear the plots
         self.eeg_plot.set_data([], np.array([]), "EEG Signal")
-        self.downsampled_plot.set_data([], np.array([]), "Downsampled Signal (200Hz)")
+        self.zscore_plot.clear_data()
+        self.asymmetry_gauge.set_asymmetry(0.0)
         self.emotion_plot.set_data(
             np.zeros((1, 4)), np.array([0]), 0, 1
         )
@@ -672,6 +485,7 @@ class SimulatorView(QWidget):
         # Store headset SR for downsampling in _update_gui_plot
         self.headset_sr = max(1, sample_rate)
         self.display_channels = channels
+        self.channel_selector.set_max_channels(channels)
         
         # Reset state
         self.review_mode = False
@@ -709,7 +523,9 @@ class SimulatorView(QWidget):
         
         # Change state
         self.is_connected = True
-        self.status_lbl.setText(f"Status: Connected to {host}:{port}")
+        self.status_val.setText(f"Connected to {host}:{port}")
+        self.emotion_val.setText("—")
+        self.segments_val.setText("0 classified")
         self.start_btn.setText("Stop Listening")
         self.start_btn.setEnabled(True)
         
@@ -735,7 +551,8 @@ class SimulatorView(QWidget):
                 self.worker_thread.quit()
                 self.worker_thread.wait(2000)
             
-        self.status_lbl.setText("Status: Disconnected")
+        self.status_val.setText("Disconnected")
+        self.emotion_val.setText("—")
         self.start_btn.setText("Start Listening")
         self.settings_group.setEnabled(True)
         
@@ -754,7 +571,7 @@ class SimulatorView(QWidget):
     def on_disconnected(self):
         # We don't shut the worker down yet, just the stream.
         self.stop_listening(wait_worker=True)
-        self.status_lbl.setText("Status: Stream ended. Processing remaining data...")
+        self.status_val.setText("Stream ended. Processing remaining data...")
         self.awaiting_worker_finish = True
         
         # We handle entering review mode in `_on_classification_result`
@@ -763,7 +580,7 @@ class SimulatorView(QWidget):
             self._enter_review_mode()
             
     def _enter_review_mode(self):
-        self.status_lbl.setText("Status: Reviewing Completed Session")
+        self.status_val.setText("Reviewing Completed Session")
         self.review_mode = True
         self.awaiting_worker_finish = False
         self.review_widget.setVisible(True)
@@ -860,166 +677,150 @@ class SimulatorView(QWidget):
                 )
 
     def _update_gui_plot(self):
-        """Timer callback (30 FPS) to flush collected network samples to the rolling display"""
-        if not self.is_connected or not self.pending_samples:
+        """Timer callback (30 FPS): flush network samples, update buffers and EEG plot."""
+        if not self.is_connected:
             return
-            
-        # Flush all pending samples
-        samples_to_flush = self.pending_samples[:]
+        new_block = self._flush_pending_samples()
+        if new_block is None:
+            return
+        self._update_history_buffer(new_block)
+        self._update_display_buffer(new_block)
+        if self.detection_checkbox.isChecked():
+            self._feed_classification_buffer(new_block)
+        self.playhead_samples += new_block.shape[1]
+        self._refresh_eeg_plot()
+
+    def _flush_pending_samples(self):
+        """Drain pending_samples list into a (channels, n) numpy array. Returns None if empty."""
+        if not self.pending_samples:
+            return None
+        samples = self.pending_samples[:]
         self.pending_samples.clear()
-        
-        if not samples_to_flush:
-            return
-            
-        # Convert to numpy block (channels, num_new_raw) at headset sample rate
-        new_block = np.array(samples_to_flush, dtype=np.float32).T
-        
+        return np.array(samples, dtype=np.float32).T
+
+    def _update_history_buffer(self, new_block: np.ndarray):
+        """Append new samples to full_history, growing the array if needed."""
         num_new = new_block.shape[1]
-        
-        # Append to full history, resizing if necessary
         if self.total_samples_received + num_new > self.full_history_capacity:
-            self.full_history_capacity = max(self.full_history_capacity * 2, self.total_samples_received + num_new + self.headset_sr * 60)
-            new_history = np.zeros((self.display_channels, self.full_history_capacity))
-            new_history[:, :self.total_samples_received] = self.full_history[:, :self.total_samples_received]
-            self.full_history = new_history
-            
+            self.full_history_capacity = max(
+                self.full_history_capacity * 2,
+                self.total_samples_received + num_new + self.headset_sr * 60
+            )
+            new_hist = np.zeros((self.display_channels, self.full_history_capacity))
+            new_hist[:, :self.total_samples_received] = self.full_history[:, :self.total_samples_received]
+            self.full_history = new_hist
         self.full_history[:, self.total_samples_received:self.total_samples_received + num_new] = new_block
         self.total_samples_received += num_new
-        
-        # Shift display buffer left by num_new and insert new data
+
+    def _update_display_buffer(self, new_block: np.ndarray):
+        """Shift the rolling 10-second display window left and insert new samples."""
+        num_new = new_block.shape[1]
         shift = min(num_new, self.display_buffer_len)
         if shift < self.display_buffer_len:
             self.display_data[:, :-shift] = self.display_data[:, shift:]
         self.display_data[:, -shift:] = new_block[:, -shift:]
-        
-        # Build classification buffer (only if model is enabled)
-        if self.detection_checkbox.isChecked():
-            model_block = new_block[:min(new_block.shape[0], n_channels), :]
-            if model_block.shape[0] < n_channels:
-                # Pad with zeros if fewer channels than the model expects
-                pad = np.zeros((n_channels - model_block.shape[0], model_block.shape[1]), dtype=np.float32)
-                model_block = np.vstack([model_block, pad])
-                
-            model_num_new = model_block.shape[1]
-            remaining = model_num_new
-            src_offset = 0
-            while remaining > 0:
-                space = self.window_samples - self.buffer_pos
-                take = min(remaining, space)
-                
-                self.classification_buffer[:, self.buffer_pos:self.buffer_pos + take] = model_block[:, src_offset:src_offset + take]
-                self.buffer_pos += take
-                src_offset += take
-                remaining -= take
-                
-                if self.buffer_pos >= self.window_samples:
-                    # We have a full 1-second block at headset_sr
-                    # Now we downsample this 1-second block to model frequency (sf = 200 Hz)
-                    if self.headset_sr != sf:
-                        g = math.gcd(sf, self.headset_sr)
-                        up = sf // g
-                        down = self.headset_sr // g
-                        ds_block = scipy.signal.resample_poly(self.classification_buffer, up, down, axis=1).astype(np.float32)
-                    else:
-                        ds_block = self.classification_buffer.copy()
-                        
-                    # Shift downsampled display buffer and insert the downsampled 1-second block
-                    ds_num = ds_block.shape[1]
-                    shift_ds = min(ds_num, self.downsampled_display_len)
-                    if shift_ds < self.downsampled_display_len:
-                        self.downsampled_display_data[:, :-shift_ds] = self.downsampled_display_data[:, shift_ds:]
-                    self.downsampled_display_data[:, -shift_ds:] = ds_block[:, -shift_ds:]
-                    
-                    self.worker.enqueue(ds_block)
-                    self.buffer_pos = 0
 
-        self.playhead_samples += num_new
+    def _feed_classification_buffer(self, new_block: np.ndarray):
+        """Fill 1-second window from new_block; downsample if needed; enqueue to worker."""
+        model_block = new_block[:min(new_block.shape[0], n_channels), :]
+        if model_block.shape[0] < n_channels:
+            pad = np.zeros((n_channels - model_block.shape[0], model_block.shape[1]), dtype=np.float32)
+            model_block = np.vstack([model_block, pad])
 
-        # Update EEG widget (showing full 10 seconds rolling)
-        cur_t = self.playhead_samples / self.headset_sr
-        t_start = max(0, cur_t - (self.display_buffer_len / self.headset_sr))
+        remaining  = model_block.shape[1]
+        src_offset = 0
+        while remaining > 0:
+            space = self.window_samples - self.buffer_pos
+            take  = min(remaining, space)
+            self.classification_buffer[:, self.buffer_pos:self.buffer_pos + take] = \
+                model_block[:, src_offset:src_offset + take]
+            self.buffer_pos += take
+            src_offset      += take
+            remaining       -= take
+            if self.buffer_pos >= self.window_samples:
+                ds_block = self._downsample_block(self.classification_buffer)
+                self._update_downsampled_display(ds_block)
+                seg_timestamp = (self.playhead_samples + src_offset) / self.headset_sr
+                self.worker.enqueue(ds_block, seg_timestamp)
+                self.buffer_pos = 0
+
+    def _downsample_block(self, block: np.ndarray) -> np.ndarray:
+        """Resample a 1-second block from headset_sr to model sr (sf) if they differ."""
+        if self.headset_sr == sf:
+            return block.copy()
+        g    = math.gcd(sf, self.headset_sr)
+        up   = sf // g
+        down = self.headset_sr // g
+        return scipy.signal.resample_poly(block, up, down, axis=1).astype(np.float32)
+
+    def _update_downsampled_display(self, ds_block: np.ndarray):
+        """Shift the downsampled rolling display buffer and insert the new block."""
+        ds_num   = ds_block.shape[1]
+        shift_ds = min(ds_num, self.downsampled_display_len)
+        if shift_ds < self.downsampled_display_len:
+            self.downsampled_display_data[:, :-shift_ds] = self.downsampled_display_data[:, shift_ds:]
+        self.downsampled_display_data[:, -shift_ds:] = ds_block[:, -shift_ds:]
+
+    def _refresh_eeg_plot(self):
+        """Rebuild the per-channel display data with centering/offset and update the EEG plot."""
+        cur_t   = self.playhead_samples / self.headset_sr
+        t_start = max(0, cur_t - self.display_buffer_len / self.headset_sr)
         time_axis = np.linspace(t_start, cur_t, self.display_buffer_len)
-        
-        channels = self._get_selected_channels()
-        ch_data = []
+        channels  = self._get_selected_channels()
+        ch_data   = []
         for i, (label, idx) in enumerate(channels):
-            data = self.display_data[idx, :].copy()
-            
+            data        = self.display_data[idx, :].copy()
             valid_start = max(0, self.display_buffer_len - self.playhead_samples)
             if self.playhead_samples > 0:
                 valid_data = data[valid_start:]
-                mean_val = np.mean(valid_data) if len(valid_data) > 0 else 0.0
-                
-                # Overwrite initial zeros so they don't skew the visual start
+                mean_val   = np.mean(valid_data) if len(valid_data) > 0 else 0.0
                 if valid_start > 0:
                     data[:valid_start] = mean_val
-                    
                 centered = data - mean_val
             else:
                 centered = data
-                
-            offset = i * 150.0
-            ch_data.append((label, centered + offset))
-        
+            ch_data.append((label, centered + i * 150.0))
         self.eeg_plot.set_data(
-            ch_data, 
-            time_axis,
+            ch_data, time_axis,
             f"EEG Signal (Real-time) — {self.headset_sr} Hz"
         )
         
-        ds_ch_data = []
-        for i, (label, idx) in enumerate(channels):
-            if idx < n_channels:
-                data = self.downsampled_display_data[idx, :].copy()
-                valid_start = max(0, self.downsampled_display_len - int(self.playhead_samples * sf / self.headset_sr))
-                if self.playhead_samples > 0:
-                    valid_data = data[valid_start:]
-                    mean_val = np.mean(valid_data) if len(valid_data) > 0 else 0.0
-                    if valid_start > 0:
-                        data[:valid_start] = mean_val
-                    centered = data - mean_val
-                else:
-                    centered = data
-                offset = i * 150.0
-                ds_ch_data.append((label, centered + offset))
-        
-        downsampled_time_axis = np.linspace(t_start, cur_t, self.downsampled_display_len)
-        self.downsampled_plot.set_data(
-            ds_ch_data,
-            downsampled_time_axis,
-            f"Downsampled Signal (Model Input) — {sf} Hz, min({n_channels}, {self.display_channels}) Channels"
-        )
+
 
     # ── Worker callbacks (main thread) ───────────────────
-    
-    def _on_classification_result(self, features, probs):
-        self.emotion_probs.append(probs)
-        
-        # Send to music synthesizer if enabled
+
+    def _on_classification_result(self, result: EmotionResult):
+        self.emotion_probs.append(result.probs)
+
+        # Always process band powers through EEGTexturingEngine so the Z-score plot
+        # has data even when music is disabled.
+        te = self.synth.eeg_texturing_engine
+        te.process(result.band_powers)
+
         if self.music_checkbox.isChecked():
-            timestamp = len(self.emotion_probs) - 1  # 1-second segments
-            self.synth.update_emotion(probs, timestamp)
-        
+            ts = result.timestamp if result.timestamp is not None else (len(self.emotion_probs) - 1)
+            self.synth.update_emotion(result.probs, ts, result.band_powers)
+
+        # Update Z-score plot & Asymmetry Gauge (sourced from EEGTexturingEngine)
+        self.zscore_plot.append_z_scores(te.last_z_scores, te.is_calibrated, te.calibration_progress)
+        self.asymmetry_gauge.set_asymmetry(result.asymmetry)
+
         n_segs = len(self.emotion_probs)
+        self.segments_val.setText(f"{n_segs} classified")
         if n_segs > 0:
-            probs_arr = np.array(self.emotion_probs)
-            e_time = np.arange(n_segs)
-            
-            # Show full timeline from the beginning
-            view_start = 0
-            view_end = e_time[-1] + 1
-            
-            self.emotion_plot.set_data(
-                probs_arr, e_time,
-                view_start,
-                view_end
-            )
-            
-            dominant = self.EMOTION_LABELS[np.argmax(probs)]
-            # Only update status if we aren't waiting for the finish
-            if not self.awaiting_worker_finish:
-                self.status_lbl.setText(f"Status: Connected | Dominant Emotion: {dominant}")
-        
-        # Check if stream ended and we just drained the last item from the queue
+            probs_arr  = np.array(self.emotion_probs)
+            e_time     = np.arange(n_segs)
+            self.emotion_plot.set_data(probs_arr, e_time, 0, e_time[-1] + 1)
+
+            dominant = self.EMOTION_LABELS[result.dominant_idx]
+            self.emotion_val.setText(dominant)
+
+        # Check if stream ended and the last queue item was just processed
         if self.awaiting_worker_finish and self.worker.is_empty():
             self._enter_review_mode()
+
+    def set_model(self, model):
+        """Update the classification model."""
+        self.model = model
+        if hasattr(self, 'worker') and self.worker is not None:
+            self.worker.set_model(model)
