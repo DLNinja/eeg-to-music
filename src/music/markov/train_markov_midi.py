@@ -1,20 +1,13 @@
-"""
-train_markov_midi.py — Time-Aligned Markov Chain Extraction from VGMIDI
 
-Reads the VGMIDI dataset (continuous V-A annotations + MIDI files),
-time-aligns MIDI events with the 32-sample V-A curves, and builds
-per-quadrant Markov transition matrices for:
-  1. Melody pitch intervals  (current_interval → next_interval)
-  2. Note durations           (current_duration_bin → next_duration_bin)
-  3. Quadrant transitions     (current_quadrant → next_quadrant)
+# train_markov_midi.py — Time-Aligned Markov Chain Extraction from VGMIDI
 
-Output: JSON files in models/transitions/ for each of the 4 quadrants.
+# Reads the VGMIDI dataset,
+# time-aligns MIDI events with the V-A annotations and builds
+# per-quadrant Markov transition matrices for:
+# 1. Melody pitch intervals   (current_interval -> next_interval)
+# 2. Note durations           (current_duration_bin -> next_duration_bin)
+# 3. Quadrant transitions     (current_quadrant -> next_quadrant)
 
-Usage:
-  python src/music/train_markov_midi.py [--download]
-
-  --download    Clone the VGMIDI repo into datasets/vgmidi/ first.
-"""
 
 import os
 import sys
@@ -25,33 +18,19 @@ from collections import defaultdict
 import mido
 
 # ─── Paths ──────────────────────────────────────────────────────────────────────
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 DATASET_DIR  = os.path.join(PROJECT_ROOT, 'datasets', 'vgmidi')
 ANNO_DIR     = os.path.join(DATASET_DIR, 'labelled', 'annotations')
 MIDI_DIR     = os.path.join(DATASET_DIR, 'labelled', 'midi')
 OUTPUT_DIR   = os.path.join(PROJECT_ROOT, 'models', 'transitions')
 
 ANNO_FILES   = ['vgmidi_raw_1.json', 'vgmidi_raw_2.json']
-N_SAMPLES    = 32  # Each annotation has exactly 32 time-aligned V-A samples
 
 # Duration bins for Markov state (in seconds)
 DURATION_BINS = [0.125, 0.25, 0.5, 1.0, 2.0, 4.0]
 DURATION_LABELS = ['sixteenth', 'eighth', 'quarter', 'half', 'whole', 'long']
 
 # ─── Helpers ────────────────────────────────────────────────────────────────────
-
-def download_dataset():
-    """Clone the VGMIDI repo from GitHub."""
-    if os.path.exists(DATASET_DIR):
-        print(f"Dataset directory already exists: {DATASET_DIR}")
-        return
-    os.makedirs(os.path.dirname(DATASET_DIR), exist_ok=True)
-    print(f"Cloning VGMIDI into {DATASET_DIR}...")
-    subprocess.run(
-        ['git', 'clone', '--depth', '1', 'https://github.com/lucasnfe/vgmidi.git', DATASET_DIR],
-        check=True
-    )
-    print("Download complete.")
 
 def get_quadrant(v, a):
     """Map continuous V-A to a discrete quadrant label."""
@@ -63,21 +42,16 @@ def get_quadrant(v, a):
         return 'sad'
     if v < 0 and a >= 0:
         return 'fear'
-    # v >= 0, a < 0 →  map to neutral
+    # v >= 0, a < 0 -> map to neutral
     return 'neutral'
 
 def bin_duration(seconds):
-    """Quantise a note duration (seconds) into a named bin."""
     for i, edge in enumerate(DURATION_BINS):
         if seconds <= edge:
             return DURATION_LABELS[i]
     return DURATION_LABELS[-1]
 
 def midi_to_timed_notes(filepath):
-    """
-    Parse a MIDI file and return a flat list of
-    (onset_seconds, pitch, duration_seconds) sorted by onset.
-    """
     try:
         mid = mido.MidiFile(filepath)
     except Exception as e:
@@ -87,7 +61,6 @@ def midi_to_timed_notes(filepath):
     tempo = 500000  # default 120 BPM
     ticks_per_beat = mid.ticks_per_beat
 
-    # Flatten all tracks into absolute-time events
     events = []
     for track in mid.tracks:
         abs_tick = 0
@@ -101,8 +74,8 @@ def midi_to_timed_notes(filepath):
 
     events.sort(key=lambda x: x[0])
 
-    # Pair note_on → note_off to get durations
-    active = {}   # pitch → onset_time
+    # Pair note_on -> note_off to get durations
+    active = {}   # pitch -> onset_time
     notes = []
     for t, typ, pitch, vel in events:
         if typ == 'note_on' and vel > 0:
@@ -117,7 +90,6 @@ def midi_to_timed_notes(filepath):
     return notes
 
 def get_piece_duration(filepath):
-    """Get total duration of a MIDI file in seconds."""
     try:
         mid = mido.MidiFile(filepath)
         return mid.length
@@ -125,14 +97,16 @@ def get_piece_duration(filepath):
         return 0
 
 def average_annotations(annotations_for_piece):
-    """
-    Given a list of (valence_array, arousal_array) from multiple annotators,
-    return the element-wise averaged (valence, arousal) arrays.
-    """
+    # Given a list of (valence_array, arousal_array) from multiple annotators,
+    # return the element-wise averaged (valence, arousal) arrays.
+    # Uses the minimum array length across annotators to handle variable-length annotations.
+
     n = len(annotations_for_piece)
     if n == 0:
         return None, None
-    length = len(annotations_for_piece[0][0])
+    length = min(min(len(v), len(a)) for v, a in annotations_for_piece)
+    if length == 0:
+        return None, None
     avg_v = [0.0] * length
     avg_a = [0.0] * length
     for v_arr, a_arr in annotations_for_piece:
@@ -146,18 +120,17 @@ def average_annotations(annotations_for_piece):
 # ─── Main Extraction ───────────────────────────────────────────────────────────
 
 def extract_transitions():
-    """
-    Core algorithm:
-    1. For each annotated piece, load the averaged 32-sample V-A curve.
-    2. Load the corresponding MIDI file and extract timed notes.
-    3. Divide the MIDI timeline into 32 equal windows.
-    4. For each window, assign the V-A value → quadrant.
-    5. For each consecutive pair of notes within a window,
-       record (pitch_interval, duration_bin) transitions under that quadrant.
-    6. Also record quadrant-to-quadrant transitions across windows.
-    """
+    # Core algorithm:
+    # 1. For each annotated piece, load the averaged V-A samples.
+    # 2. Load the corresponding MIDI file and extract timed notes.
+    # 3. Divide the MIDI timeline into equal length windows coresponding to the annotations.
+    # 4. For each window, assign the V-A value -> quadrant.
+    # 5. For each consecutive pair of notes within a window,
+    #    record (pitch_interval, duration_bin) transitions under that quadrant.
+    # 6. Also record quadrant-to-quadrant transitions across windows.
+
     # Step 1: Parse annotations — group by piece index
-    piece_annotations = defaultdict(list)  # piece_idx → [(v_array, a_array), ...]
+    piece_annotations = defaultdict(list)  # piece_idx -> [(v_array, a_array), ...]
 
     for anno_file in ANNO_FILES:
         path = os.path.join(ANNO_DIR, anno_file)
@@ -174,13 +147,12 @@ def extract_transitions():
             piece_idx = parts[0].replace('piece', '')
             v_arr = entry.get('valence', [])
             a_arr = entry.get('arousal', [])
-            if len(v_arr) == N_SAMPLES and len(a_arr) == N_SAMPLES:
+            if len(v_arr) > 0 and len(a_arr) > 0 and len(v_arr) == len(a_arr):
                 piece_annotations[piece_idx].append((v_arr, a_arr))
 
     print(f"Found annotations for {len(piece_annotations)} pieces.")
 
     # Step 2: Build the MIDI filename mapping
-    # VGMIDI CSV maps piece index → filename
     csv_path = os.path.join(DATASET_DIR, 'vgmidi_labelled.csv')
     piece_to_midi = {}
     if os.path.exists(csv_path):
@@ -189,10 +161,7 @@ def extract_transitions():
             reader = csv.DictReader(f)
             for i, row in enumerate(reader):
                 midi_path = row.get('midi', '')
-                # The CSV path is relative: labelled/phrases/...
-                # We need the full MIDI from labelled/midi/
                 basename = os.path.basename(midi_path)
-                # Strip the trailing _0.mid, _1.mid suffix to get the original filename
                 name_parts = basename.rsplit('_', 1)
                 if len(name_parts) == 2:
                     original_name = name_parts[0] + '.mid'
@@ -221,7 +190,6 @@ def extract_transitions():
 
         midi_path = os.path.join(MIDI_DIR, midi_filename)
         if not os.path.exists(midi_path):
-            # Try with spaces in filename
             continue
 
         # Average annotations across all annotators
@@ -238,12 +206,13 @@ def extract_transitions():
         if total_dur <= 0:
             continue
 
-        window_dur = total_dur / N_SAMPLES
+        actual_samples = len(avg_v)
+        window_dur = total_dur / actual_samples
         stats['pieces_processed'] += 1
 
         # Step 4: Assign notes to windows and record transitions
         prev_quadrant = None
-        for w in range(N_SAMPLES):
+        for w in range(actual_samples):
             v = avg_v[w]
             a = avg_a[w]
             quadrant = get_quadrant(v, a)
@@ -303,8 +272,6 @@ def normalise(counts_dict):
     return probs
 
 def main():
-    if '--download' in sys.argv:
-        download_dataset()
 
     # Verify dataset exists
     if not os.path.exists(ANNO_DIR):
@@ -338,17 +305,17 @@ def main():
         
         n_pitch_states = len(output['pitch_interval_1'])
         n_dur_states   = len(output['duration'])
-        print(f"  {q:8s}: {n_pitch_states:3d} 1st-order pitch states, {n_dur_states:3d} duration states → {out_file}")
+        print(f"  {q:8s}: {n_pitch_states:3d} 1st-order pitch states, {n_dur_states:3d} duration states -> {out_file}")
 
     # Save quadrant flow matrix (emotion transition probabilities)
     flow_output = normalise(quadrant_flow)
     flow_file = os.path.join(OUTPUT_DIR, 'quadrant_flow.json')
     with open(flow_file, 'w') as f:
         json.dump(flow_output, f, indent=2)
-    print(f"\n  Quadrant flow matrix → {flow_file}")
+    print(f"\n  Quadrant flow matrix -> {flow_file}")
 
     print("\n" + "=" * 60)
-    print("  DONE — Transition matrices saved to models/transitions/")
+    print("  DONE -- Transition matrices saved to models/transitions/")
     print("=" * 60)
 
 if __name__ == '__main__':

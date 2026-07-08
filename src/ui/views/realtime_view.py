@@ -19,7 +19,7 @@ from src.model.signal_processing import (
 from src.model.emotion_classifier import EEGResNet
 from src.ui.views.pipeline_view import EegPlotWidget, EmotionPlotWidget
 from src.ui.components.piano_roll import PianoRollWidget
-from src.music.realtime_generator import RealTimeMusicSynthesizer
+from src.music.orchestrators.realtime_generator import RealTimeMusicSynthesizer
 
 
 # ──────────────────────────────────────────────────────
@@ -449,6 +449,8 @@ class RealTimeView(QWidget):
         if not self.is_playing:
             if self.playhead_idx == 0: # Only reset if starting from beginning
                 self._reset_streaming_state()
+                self.synth.reset_state()
+                self.piano_roll.clear_notes()
                 self._exit_review_mode()
             
             self.is_playing = True

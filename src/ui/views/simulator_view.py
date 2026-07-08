@@ -25,7 +25,7 @@ from src.model.signal_processing import (
 from src.model.emotion_classifier import EEGResNet
 from src.ui.views.pipeline_view import EegPlotWidget, EmotionPlotWidget
 from src.ui.components.piano_roll import PianoRollWidget
-from src.music.realtime_generator import RealTimeMusicSynthesizer
+from src.music.orchestrators.realtime_generator import RealTimeMusicSynthesizer
 
 # Default values (used as UI defaults, can be changed by user)
 DEFAULT_HOST = '127.0.0.1'
@@ -34,7 +34,7 @@ DEFAULT_CHANNELS = 64
 DEFAULT_SAMPLE_RATE = 256
 
 # BioSemi ADC resolution: 1 bit = 31.25 nV = 0.03125 µV
-# So 1 µV = 1 / 0.03125 = 32000 bits
+# So 1 µV = 1 / 0.03125 = 32 bits
 DEFAULT_UV_TO_BITS = 32
 DEFAULT_BYTES_PER_SAMPLE = 3  # 24-bit samples
 DEFAULT_SAMPLES_PER_PACKET = 2  # BioSemi sends multiple samples per TCP packet
@@ -42,6 +42,11 @@ DEFAULT_SAMPLES_PER_PACKET = 2  # BioSemi sends multiple samples per TCP packet
 # ──────────────────────────────────────────────────────
 # Data Stream Thread
 # ──────────────────────────────────────────────────────
+
+def int24_to_int32(arr1, arr2, arr3):
+    #create a numpy int32 value by combining the three bytes
+    return (((np.int32(arr3) << 16) | (np.int32(arr2) << 8) | (np.int32(arr1) << 0)) << 8)>>8
+
 
 class DataStreamThread(QThread):
     """
@@ -91,8 +96,7 @@ class DataStreamThread(QThread):
 
         while self.running:
             try:
-                #raw_data = self.recvall(self.packet_size)
-                raw_data = self.sock.recv(self.packet_size)
+                raw_data = self.recvall(self.packet_size)
 
                 if not self.running:
                     break
@@ -110,8 +114,10 @@ class DataStreamThread(QThread):
                     for ch in range(self.channels):
                         offset = sample_offset + ch * self.bytes_per_sample
                         sample_bytes = raw_data[offset: offset + self.bytes_per_sample]
-                        raw_int = int.from_bytes(sample_bytes, byteorder='little', signed=True)
-                        uv_value = float(raw_int)  * self.bits_to_uv
+                        #raw_int = int.from_bytes(sample_bytes, byteorder='little', signed=True)
+                        #uv_value = float(raw_int) * self.bits_to_uv
+                        raw_int = int24_to_int32(raw_data[offset+0], raw_data[offset+1], raw_data[offset+2])
+                        uv_value = raw_int * self.bits_to_uv
                         values.append(uv_value)
                     all_samples.append(values)
                 self.new_data_signal.emit(all_samples)
@@ -810,10 +816,13 @@ class SimulatorView(QWidget):
         if start_sample >= end_sample:
             return
             
-        # Plot EEG
+        # Plot EEG (subtract per-channel mean to remove BioSemi DC offset)
         time_axis = np.arange(start_sample, end_sample) / self.sf
         channels = self._get_selected_channels()
-        ch_data = [(label, self.full_history[idx, start_sample:end_sample]) for label, idx in channels]
+        ch_data = []
+        for label, idx in channels:
+            sig = self.full_history[idx, start_sample:end_sample]
+            ch_data.append((label, sig - np.mean(sig)))
         self.eeg_plot.set_data(ch_data, time_axis, "EEG Signal — Review Mode")
         
         # Plot Emotions
@@ -894,13 +903,16 @@ class SimulatorView(QWidget):
 
         self.playhead_samples += num_new
 
-        # Update EEG widget (showing full 10 seconds rolling)
+        # Update EEG widget (subtract per-channel mean to remove BioSemi DC offset)
         cur_t = self.playhead_samples / self.sf
         t_start = max(0, cur_t - (self.display_buffer_len / self.sf))
         time_axis = np.linspace(t_start, cur_t, self.display_buffer_len)
         
         channels = self._get_selected_channels()
-        ch_data = [(label, self.display_data[idx, :]) for label, idx in channels]
+        ch_data = []
+        for label, idx in channels:
+            sig = self.display_data[idx, :]
+            ch_data.append((label, sig - np.mean(sig)))
         
         self.eeg_plot.set_data(
             ch_data, time_axis,
