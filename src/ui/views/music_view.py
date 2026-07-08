@@ -454,16 +454,27 @@ class SynthInitWorker(QObject):
         try:
             with SuppressStderr():
                 synth = fluidsynth.Synth()
+                
+                # FluidSynth settings to prevent trying to open MIDI INPUT devices
+                # which causes the "Expected:1 found:0" error on many systems.
+                synth.setting('midi.driver', 'none')
+                
                 if os.name == "nt":
-                    try:
-                        synth.start(driver="waveout")
-                    except:
-                        synth.start()
+                    drivers = ["dsound", "waveout", "winmidi"]
                 else:
+                    drivers = ["pulseaudio", "alsa", "jack"]
+
+                success = False
+                for driver in drivers:
                     try:
-                        synth.start(driver="pulseaudio")
+                        synth.start(driver=driver)
+                        success = True
+                        break
                     except:
-                        synth.start()
+                        continue
+                
+                if not success:
+                    synth.start()
                 
                 soundfonts = [
                     "models/soundfont.sf2",

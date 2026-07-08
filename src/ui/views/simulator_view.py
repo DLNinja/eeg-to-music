@@ -25,7 +25,7 @@ from src.model.signal_processing import (
 from src.model.emotion_classifier import EEGResNet
 from src.ui.views.pipeline_view import EegPlotWidget, EmotionPlotWidget
 from src.ui.components.piano_roll import PianoRollWidget
-from src.music.realtime_generator import RealTimeMusicSynthesizer
+from src.music.orchestrators.realtime_generator import RealTimeMusicSynthesizer
 
 # Default values (used as UI defaults, can be changed by user)
 DEFAULT_HOST = '127.0.0.1' #'127.0.0.1''192.168.100.213'
@@ -42,6 +42,11 @@ DEFAULT_SAMPLES_PER_PACKET = 2  # BioSemi sends multiple samples per TCP packet
 # ──────────────────────────────────────────────────────
 # Data Stream Thread
 # ──────────────────────────────────────────────────────
+
+def int24_to_int32(arr1, arr2, arr3):
+    #create a numpy int32 value by combining the three bytes
+    return (((np.int32(arr3) << 16) | (np.int32(arr2) << 8) | (np.int32(arr1) << 0)) << 8)>>8
+
 
 class DataStreamThread(QThread):
     """

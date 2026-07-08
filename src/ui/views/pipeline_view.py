@@ -14,7 +14,7 @@ from PyQt5.QtGui import QPainter, QColor, QPen, QFont, QPainterPath
 # Import Model + Feat Extraction
 from src.model.signal_processing import get_de_stft, smooth_features, sf
 from src.model.emotion_classifier import EEGResNet
-from src.music.midi_generator import generate_midi_from_emotions
+from src.music.orchestrators.midi_generator import generate_midi_from_emotions
 from src.ui.views.music_view import MusicView
 
 
