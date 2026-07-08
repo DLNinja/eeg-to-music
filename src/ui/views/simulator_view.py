@@ -17,7 +17,7 @@ from PyQt5.QtGui import QIntValidator
 from src.eeg_pipeline.signal_processing import sf, n_channels
 from src.eeg_pipeline.emotion_classifier import load_emotion_model
 from src.eeg_pipeline.classification_worker import ClassificationWorker
-from src.eeg_pipeline.emotion_result import EmotionResult
+from src.eeg_pipeline.segment_processor import SegmentProcessor
 from src.ui.components.eeg_plots import EegPlotWidget, EmotionPlotWidget, BandZScorePlotWidget, AsymmetryGaugeWidget
 from src.ui.components.piano_roll import PianoRollWidget
 from src.ui.components.channel_selector import ChannelSelectorWidget
@@ -80,12 +80,21 @@ class SimulatorView(QWidget):
         self.ui_timer.timeout.connect(self._update_gui_plot)
         
         self.model = load_emotion_model()
-        
-        self.worker_thread = QThread()
-        self.worker = ClassificationWorker(self.model, self.stft_n, self.sf)
+        self._pending_band_powers: dict = {}  # keyed by timestamp, matches probs to band_powers
+
+        # Separate threads for SegmentProcessor and ClassificationWorker
+        self.seg_proc_thread = QThread()
+        self.worker_thread   = QThread()
+        self.seg_proc        = SegmentProcessor(self.stft_n, self.sf)
+        self.worker          = ClassificationWorker(self.model)
+        self.seg_proc.moveToThread(self.seg_proc_thread)
         self.worker.moveToThread(self.worker_thread)
+        self.seg_proc_thread.started.connect(self.seg_proc.run)
         self.worker_thread.started.connect(self.worker.run)
-        self.worker.thread_result.connect(self._on_classification_result)
+        # SegmentProcessor → cache band_powers + forward de to ClassificationWorker
+        self.seg_proc.segment_processed.connect(self._on_segment_processed)
+        # ClassificationWorker → combine with cached band_powers → emit result
+        self.worker.classification_done.connect(self._on_classification_done)
         
         self.stream_thread = None
         
@@ -509,7 +518,11 @@ class SimulatorView(QWidget):
         self.buffer_pos = 0
         self.pending_samples = []
 
+        self.seg_proc.reset()
         self.worker.reset()
+        self._pending_band_powers.clear()
+        if not self.seg_proc_thread.isRunning():
+            self.seg_proc_thread.start()
         if not self.worker_thread.isRunning():
             self.worker_thread.start()
 
@@ -546,6 +559,10 @@ class SimulatorView(QWidget):
             self.stream_thread = None
             
         if not wait_worker:
+            if self.seg_proc_thread.isRunning():
+                self.seg_proc.stop()
+                self.seg_proc_thread.quit()
+                self.seg_proc_thread.wait(2000)
             if self.worker_thread.isRunning():
                 self.worker.stop()
                 self.worker_thread.quit()
@@ -576,7 +593,7 @@ class SimulatorView(QWidget):
         
         # We handle entering review mode in `_on_classification_result`
         # once the worker queue is empty, or immediately if already empty.
-        if self.worker.is_empty():
+        if self.seg_proc.is_empty() and self.worker.is_empty():
             self._enter_review_mode()
             
     def _enter_review_mode(self):
@@ -588,6 +605,10 @@ class SimulatorView(QWidget):
         self._on_review_mode_changed()
         
         # Stop the worker thread now that we are done
+        if self.seg_proc_thread.isRunning():
+            self.seg_proc.stop()
+            self.seg_proc_thread.quit()
+            self.seg_proc_thread.wait(2000)
         if self.worker_thread.isRunning():
             self.worker.stop()
             self.worker_thread.quit()
@@ -741,11 +762,10 @@ class SimulatorView(QWidget):
                 ds_block = self._downsample_block(self.classification_buffer)
                 self._update_downsampled_display(ds_block)
                 seg_timestamp = (self.playhead_samples + src_offset) / self.headset_sr
-                self.worker.enqueue(ds_block, seg_timestamp)
+                self.seg_proc.enqueue(ds_block, seg_timestamp)
                 self.buffer_pos = 0
 
     def _downsample_block(self, block: np.ndarray) -> np.ndarray:
-        """Resample a 1-second block from headset_sr to model sr (sf) if they differ."""
         if self.headset_sr == sf:
             return block.copy()
         g    = math.gcd(sf, self.headset_sr)
@@ -789,21 +809,27 @@ class SimulatorView(QWidget):
 
     # ── Worker callbacks (main thread) ───────────────────
 
-    def _on_classification_result(self, result: EmotionResult):
-        self.emotion_probs.append(result.probs)
+    def _on_segment_processed(self, de, band_powers, timestamp):
+        # Cache band_powers so they can be matched when probs arrive
+        self._pending_band_powers[timestamp] = band_powers
+        self.worker.enqueue(de, timestamp)
+
+    def _on_classification_done(self, probs, timestamp):
+        band_powers = self._pending_band_powers.pop(timestamp, {})
+        self.emotion_probs.append(probs)
 
         # Always process band powers through EEGTexturingEngine so the Z-score plot
         # has data even when music is disabled.
         te = self.synth.eeg_texturing_engine
-        te.process(result.band_powers)
+        te.process(band_powers)
 
         if self.music_checkbox.isChecked():
-            ts = result.timestamp if result.timestamp is not None else (len(self.emotion_probs) - 1)
-            self.synth.update_emotion(result.probs, ts, result.band_powers)
+            ts = timestamp if timestamp is not None else (len(self.emotion_probs) - 1)
+            self.synth.update_emotion(probs, ts, band_powers)
 
         # Update Z-score plot & Asymmetry Gauge (sourced from EEGTexturingEngine)
         self.zscore_plot.append_z_scores(te.last_z_scores, te.is_calibrated, te.calibration_progress)
-        self.asymmetry_gauge.set_asymmetry(result.asymmetry)
+        self.asymmetry_gauge.set_asymmetry(band_powers.get('asymmetry', 0.0))
 
         n_segs = len(self.emotion_probs)
         self.segments_val.setText(f"{n_segs} classified")
@@ -812,15 +838,15 @@ class SimulatorView(QWidget):
             e_time     = np.arange(n_segs)
             self.emotion_plot.set_data(probs_arr, e_time, 0, e_time[-1] + 1)
 
-            dominant = self.EMOTION_LABELS[result.dominant_idx]
+            dominant_idx = int(np.argmax(probs))
+            dominant = self.EMOTION_LABELS[dominant_idx]
             self.emotion_val.setText(dominant)
 
         # Check if stream ended and the last queue item was just processed
-        if self.awaiting_worker_finish and self.worker.is_empty():
+        if self.awaiting_worker_finish and self.seg_proc.is_empty() and self.worker.is_empty():
             self._enter_review_mode()
 
     def set_model(self, model):
-        """Update the classification model."""
         self.model = model
         if hasattr(self, 'worker') and self.worker is not None:
             self.worker.set_model(model)

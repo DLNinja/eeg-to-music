@@ -202,11 +202,13 @@ class RealTimeMusicSynthesizer(QThread):
             return
         with QMutexLocker(self.mutex):
             band_z_scalars = dict(self.eeg_texturing_engine.band_z_scalars)
+            band_trends    = dict(self.eeg_texturing_engine.band_trends)
             asymmetry      = float(self.current_band_powers.get('asymmetry', 0.0))
 
         self.eeg_texturing_engine.apply_cc(
             emotion_label  = emotion_label,
             band_z_scalars = band_z_scalars,
+            band_trends    = band_trends,
             asymmetry      = asymmetry,
             synth          = self.synth,
         )

@@ -13,7 +13,7 @@ from PyQt5.QtCore import pyqtSignal, Qt, QTimer, QThread
 from src.eeg_pipeline.signal_processing import sf, n_channels
 from src.eeg_pipeline.emotion_classifier import load_emotion_model
 from src.eeg_pipeline.classification_worker import ClassificationWorker
-from src.eeg_pipeline.emotion_result import EmotionResult
+from src.eeg_pipeline.segment_processor import SegmentProcessor
 from src.ui.components.eeg_plots import EegPlotWidget, EmotionPlotWidget, BandZScorePlotWidget, AsymmetryGaugeWidget
 from src.ui.components.piano_roll import PianoRollWidget
 from src.ui.components.channel_selector import ChannelSelectorWidget
@@ -59,14 +59,19 @@ class RealTimeView(QWidget):
         self.stream_timer.timeout.connect(self._on_timer_tick)
         
         self.model = load_emotion_model()
-        
-        self.sos, self._zi_template = None, None  # managed by ClassificationWorker internally
+        self._pending_band_powers: dict = {}  # keyed by timestamp, matches probs to band_powers
 
-        self.worker_thread = QThread()
-        self.worker = ClassificationWorker(self.model, self.stft_n, self.sf)
+        self.worker_thread   = QThread()
+        self.seg_proc_thread = QThread()
+        self.seg_proc        = SegmentProcessor(self.stft_n, self.sf)
+        self.worker          = ClassificationWorker(self.model)
+        self.seg_proc.moveToThread(self.seg_proc_thread)
         self.worker.moveToThread(self.worker_thread)
+        self.seg_proc_thread.started.connect(self.seg_proc.run)
         self.worker_thread.started.connect(self.worker.run)
-        self.worker.thread_result.connect(self._on_classification_result)
+        self.seg_proc.segment_processed.connect(self._on_segment_processed)
+        self.seg_proc.all_done.connect(self.worker.finish)  # chain finish through pipeline
+        self.worker.classification_done.connect(self._on_classification_done)
         self.worker.all_done.connect(self._on_worker_finished)
         
         self.synth = RealTimeMusicSynthesizer()
@@ -360,7 +365,9 @@ class RealTimeView(QWidget):
         self.emotion_probs = []
         self.total_segments_expected = 0
         self.waiting_for_worker = False
+        self.seg_proc.reset()
         self.worker.reset()
+        self._pending_band_powers.clear()
     
     # ── Playback controls ────────────────────────────────
     
@@ -380,6 +387,8 @@ class RealTimeView(QWidget):
             self.pause_btn.setEnabled(True)
             self.stop_btn.setEnabled(True)
             
+            if not self.seg_proc_thread.isRunning():
+                self.seg_proc_thread.start()
             if not self.worker_thread.isRunning():
                 self.worker_thread.start()
                 
@@ -421,17 +430,22 @@ class RealTimeView(QWidget):
     
     # ── Worker callbacks (main thread) ───────────────────
     
-    def _on_classification_result(self, result: EmotionResult):
-        self.emotion_probs.append(result.probs)
+    def _on_segment_processed(self, de, band_powers, timestamp):
+        self._pending_band_powers[timestamp] = band_powers
+        self.worker.enqueue(de, timestamp)
+
+    def _on_classification_done(self, probs, timestamp):
+        band_powers = self._pending_band_powers.pop(timestamp, {})
+        self.emotion_probs.append(probs)
 
         # Send to synthesizer — EEGTexturingEngine.process() runs inside update_emotion
-        self.synth.update_emotion(result.probs, result.timestamp, result.band_powers)
+        self.synth.update_emotion(probs, timestamp, band_powers)
 
         # Update Z-score plot & Asymmetry Gauge (sourced from EEGTexturingEngine)
         if self.is_playing or self.waiting_for_worker:
             te = self.synth.eeg_texturing_engine
             self.zscore_plot.append_z_scores(te.last_z_scores, te.is_calibrated, te.calibration_progress)
-            self.asymmetry_gauge.set_asymmetry(result.asymmetry)
+            self.asymmetry_gauge.set_asymmetry(band_powers.get('asymmetry', 0.0))
 
         n_segs = len(self.emotion_probs)
 
@@ -450,6 +464,9 @@ class RealTimeView(QWidget):
         """Called when worker has drained its queue after we sent finish()."""
         self.waiting_for_worker = False
         
+        if self.seg_proc_thread.isRunning():
+            self.seg_proc_thread.quit()
+            self.seg_proc_thread.wait(2000)
         if self.worker_thread.isRunning():
             self.worker_thread.quit()
             self.worker_thread.wait(2000)
@@ -590,7 +607,7 @@ class RealTimeView(QWidget):
             self.segments_val.setText(f"{n_classified} / {self.total_segments_expected}")
             self.play_btn.setEnabled(False)
             self.pause_btn.setEnabled(False)
-            self.worker.finish()
+            self.seg_proc.finish()  # triggers worker.finish() via all_done chain
         else:
             self._on_worker_finished()
         return True
@@ -616,7 +633,7 @@ class RealTimeView(QWidget):
             remaining       -= take
             if self.buffer_pos >= self.window_samples:
                 seg_timestamp = (self.playhead_idx - self.window_samples) / self.sf
-                self.worker.enqueue(self.sample_buffer, seg_timestamp)
+                self.seg_proc.enqueue(self.sample_buffer, seg_timestamp)
                 self.buffer_pos = 0
 
     def _refresh_eeg_plot(self, total_samples: int):

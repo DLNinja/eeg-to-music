@@ -3,19 +3,20 @@
 
 import numpy as np
 import mne
+import scipy
 from scipy.signal import butter, sosfilt, sosfilt_zi, get_window, iirnotch, tf2sos
 from scipy.fft import fft
 
 n_channels = 62
 sf         = 200
 
-bands = {
-    'delta': (1,  4),
-    'theta': (4,  8),
-    'alpha': (8,  14),
-    'beta':  (14, 31),
-    'gamma': (31, 50),
-}
+bands = [
+    ('delta', (1,  4)),
+    ('theta', (4,  8)),
+    ('alpha', (8,  14)),
+    ('beta',  (14, 31)),
+    ('gamma', (31, 50)),
+]
 
 # Frontal electrode indices in the SEED-62 layout (10-20 system):
 #   Left:  FP1(0), AF3(3), F7(5), F3(7)
@@ -27,25 +28,24 @@ def compute_features(segment_data: np.ndarray, fs: int, stft_n: int = 256) -> tu
     # Feature extraction for a 1-second segment
     # Computes band powers, DE features and FAA score
 
-    band_list   = list(bands.items())
-    n_bands     = len(band_list)
-    n_ch, win   = segment_data.shape
+    n_bands     = len(bands)
+    n_ch, segment_len = segment_data.shape
 
-    f_start_idx = np.array([(lo / fs * stft_n) for _, (lo, _) in band_list], dtype=int)
-    f_end_idx   = np.array([(hi / fs * stft_n) for _, (_, hi) in band_list], dtype=int)
+    f_start_idx = np.array([(lo / fs * stft_n) for _, (lo, _) in bands], dtype=int)
+    f_end_idx   = np.array([(hi / fs * stft_n) for _, (_, hi) in bands], dtype=int)
 
-    window   = get_window("hann", win)
-    windowed = segment_data * window
-    fft_data = fft(windowed, n=stft_n, axis=1)
-    mag_sq   = np.abs(fft_data[:, :stft_n // 2]) ** 2
+    window      = scipy.signal.get_window("hann", segment_len)
+    windowed    = segment_data * window
+    fft_data    = fft(windowed, n=stft_n, axis=1)
+    magnitude   = np.abs(fft_data[:, :stft_n // 2]) ** 2
 
-    total_pow   = mag_sq.sum(axis=1) + 1e-12
+    total_pow   = magnitude.sum(axis=1) + 1e-12
     de_features = np.zeros((n_ch, n_bands))
     band_powers = {}
 
-    for b, (bname, _) in enumerate(band_list):
+    for b, (bname, _) in enumerate(bands):
         lo, hi        = f_start_idx[b], f_end_idx[b]
-        band_mag      = mag_sq[:, lo:hi + 1]
+        band_mag      = magnitude[:, lo:hi + 1]
         band_energy   = band_mag.mean(axis=1)
         de_features[:, b] = np.log2(100 * band_energy + 1e-12)
 
@@ -60,13 +60,10 @@ def compute_features(segment_data: np.ndarray, fs: int, stft_n: int = 256) -> tu
         }
 
     # Frontal Alpha Asymmetry
-    if 'alpha' in band_powers:
-        abs_alpha  = band_powers['alpha']['abs_channels']
-        left_pow   = np.mean(abs_alpha[FAA_LEFT_IDX])  + 1e-12
-        right_pow  = np.mean(abs_alpha[FAA_RIGHT_IDX]) + 1e-12
-        band_powers['asymmetry'] = float(np.log(right_pow) - np.log(left_pow))
-    else:
-        band_powers['asymmetry'] = 0.0
+    abs_alpha  = band_powers['alpha']['abs_channels']
+    left_pow   = np.mean(abs_alpha[FAA_LEFT_IDX])  + 1e-12
+    right_pow  = np.mean(abs_alpha[FAA_RIGHT_IDX]) + 1e-12
+    band_powers['asymmetry'] = float(np.log(right_pow) - np.log(left_pow))
 
     return de_features, band_powers
 
@@ -109,7 +106,7 @@ class OfflineProcessor:
         return features
 
     def smooth(self, features: np.ndarray, window: int = 5) -> np.ndarray:
-        """Apply causal moving-average smoothing along the time axis."""
+        # Apply 5-second rolling window average for the DE features
         T, C, B   = features.shape
         smoothed  = np.zeros_like(features)
         for c in range(C):
@@ -125,7 +122,6 @@ class OfflineProcessor:
 # Real-time Pipeline
 
 class RealtimeProcessor:
-    """Stateful bandpass filter + per-segment FFT feature extraction."""
 
     def __init__(self, fs: int = 200):
 

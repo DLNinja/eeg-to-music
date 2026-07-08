@@ -15,8 +15,6 @@ DEFAULT_SAMPLES_PER_PACKET = 2  # BioSemi sends multiple samples per TCP packet
 
 
 class DataStreamThread(QThread):
-    """Background thread to listen to a TCP socket continuously.
-    Decodes BioSemi ActiveView 24-bit LE signed integer format."""
     new_data_signal = pyqtSignal(list)
     error_signal = pyqtSignal(str)
     disconnected_signal = pyqtSignal()

@@ -13,14 +13,15 @@ import numpy as np
 from collections import deque
 from src.eeg_pipeline.zscore_tracker import ZScoreTracker
 
-BAND_ORDER = ['delta', 'theta', 'alpha', 'beta', 'gamma']
+BANDS = ['delta', 'theta', 'alpha', 'beta', 'gamma']
 
 class EEGTexturingEngine:
 
     def __init__(self):
         self.tracker = ZScoreTracker()
-        self.band_z_scalars: dict[str, float] = {b: 0.5 for b in BAND_ORDER}
-        self.z_history: dict[str, deque] = {b: deque(maxlen=5) for b in BAND_ORDER}
+        self.band_z_scalars: dict[str, float] = {b: 0.5 for b in BANDS}
+        self.band_trends: dict[str, float]    = {b: 0.0 for b in BANDS}
+        self.z_history: dict[str, deque] = {b: deque(maxlen=5) for b in BANDS}
         self.last_z_scores: np.ndarray | None = None # for UI
 
     @property
@@ -36,7 +37,8 @@ class EEGTexturingEngine:
 
     def reset(self):
         self.tracker.reset()
-        self.band_z_scalars = {b: 0.5 for b in BAND_ORDER}
+        self.band_z_scalars = {b: 0.5 for b in BANDS}
+        self.band_trends    = {b: 0.0 for b in BANDS}
 
         for d in self.z_history.values():
             d.clear()
@@ -44,14 +46,11 @@ class EEGTexturingEngine:
 
     def process(self, band_powers: dict) -> None:
         
-        # Build (n_channels, n_bands) raw power matrix
-        exclude = {'asymmetry', 'baseline_locked', 'calibration_seconds'}
-        band_keys = [k for k in band_powers if k not in exclude]
-
-        if not band_keys:
+        # Build (n_channels, n_bands) raw power matrix using fixed BAND_ORDER
+        if not all(b in band_powers for b in BANDS):
             return
 
-        raw_power = np.column_stack([band_powers[b]['channels'] for b in band_keys])
+        raw_power = np.column_stack([band_powers[b]['channels'] for b in BANDS])
 
         # Z-score baseline
         z_scores = self.tracker.update(raw_power)  # zeros during calibration
@@ -60,23 +59,25 @@ class EEGTexturingEngine:
         # Sigmoid normalisation + channel averaging
         if self.tracker.is_locked and z_scores.size > 0:
             z_norm = 1.0 / (1.0 + np.exp(-z_scores))
-            for i, band in enumerate(BAND_ORDER):
+            for i, band in enumerate(BANDS):
                 if i < z_norm.shape[1]:
                     self.band_z_scalars[band] = float(z_norm[:, i].mean())
                 else:
                     self.band_z_scalars[band] = 0.5
         else:
             # Not yet calibrated —> stay at neutral midpoint
-            self.band_z_scalars = {b: 0.5 for b in BAND_ORDER}
+            self.band_z_scalars = {b: 0.5 for b in BANDS}
 
         # Update rolling trend history
-        for band in BAND_ORDER:
+        for band in BANDS:
             self.z_history[band].append(self.band_z_scalars[band])
+            self.band_trends[band] = self.compute_trend(band)
 
     def apply_cc(
         self,
         emotion_label: str,
         band_z_scalars: dict,
+        band_trends: dict,
         asymmetry: float,
         synth,
     ) -> None:
@@ -90,79 +91,78 @@ class EEGTexturingEngine:
         delta_z = band_z_scalars.get('delta', 0.5)
         gamma_z = band_z_scalars.get('gamma', 0.5)
 
-        alpha_trend = self.trend('alpha')
-        beta_trend  = self.trend('beta')
-        delta_trend = self.trend('delta')
+        alpha_trend = band_trends.get('alpha', 0.0)
+        beta_trend  = band_trends.get('beta', 0.0)
+        delta_trend = band_trends.get('delta', 0.0)
+
+        # Brightness (CC 74) & Reverb (CC 91) — Valence + Arousal texture
+        if emotion_label == 'happy':
+            if alpha_z > 0.5:   # Contentment / Cozy (conflicting arousal)
+                bright_val = 40 + beta_z * 30
+                reverb_val = 60 + alpha_z * 60
+            else:               # Excitement (aligned arousal)
+                bright_val = 80 + beta_z * 47
+                reverb_val = max(0, 50 - beta_z * 50)
+        elif emotion_label == 'fear':
+            if beta_z > 0.5:    # Hyper-vigilance / Panic
+                bright_val = 90 + beta_z * 37
+                reverb_val = 20 + alpha_z * 40
+            else:               # Paralyzed Dread
+                bright_val = 30 + beta_z * 40
+                reverb_val = 40 + alpha_z * 60
+        elif emotion_label == 'sad':
+            bright_val = 60 + beta_z * 40 if beta_z > 0.5 else 30 + beta_z * 30
+            reverb_val = 40 + alpha_z * 80
+        else:  # neutral
+            bright_val = 50 + beta_z * 60
+            reverb_val = 40 + alpha_z * 80
+
+        # Trend modifiers
+        reverb_val += alpha_trend * 40
+        bright_val += beta_trend  * 25
+
+        # Chorus (CC 93) — Theta shimmer
+        if emotion_label == 'fear':
+            chorus_val = 30 + theta_z * 90
+        elif emotion_label == 'neutral':
+            chorus_val = theta_z * 100
+        else:
+            chorus_val = theta_z * 60
+
+        # Vibrato (CC 1) — Gamma focus
+        if emotion_label == 'happy':
+            vibrato_val = gamma_z * 100
+        elif emotion_label == 'fear':
+            vibrato_val = 20 + gamma_z * 80
+        else:
+            vibrato_val = gamma_z * 60
+
+        # Tremolo (CC 92) — Delta fatigue / heaviness
+        if emotion_label in ('sad', 'fear'):
+            tremolo_val = 20 + delta_z * 80
+        elif emotion_label == 'happy':
+            tremolo_val = delta_z * 50
+        else:
+            tremolo_val = delta_z * 60
+        tremolo_val += delta_trend * 50
+
+        # FAA - Panning (CC 10) + Chorus / Reverb spatial modifiers
+        pan_val = 64 - np.clip(asymmetry * 20, -32, 32)
+        if asymmetry > 0.1:     # Approach / Engagement
+            chorus_mod = asymmetry * 25
+            reverb_mod = -asymmetry * 20
+        elif asymmetry < -0.1:  # Withdrawal / Avoidance
+            chorus_mod = abs(asymmetry) * 55
+            reverb_mod = abs(asymmetry) * 35
+        else:
+            chorus_mod = 0
+            reverb_mod = 0
+
+        # Neural EQ (CC 71) & Expression / Compression (CC 11)
+        res_val        = 30 + gamma_z * 70
+        expression_val = 70 + ((beta_z + gamma_z) / 2.0) * 57
 
         for ch in [0, 1]:
-            
-            # Brightness (CC 74) & Reverb (CC 91) — Valence + Arousal texture
-            if emotion_label == 'happy':
-                if alpha_z > 0.5:   # Contentment / Cozy (conflicting arousal)
-                    bright_val = 40 + beta_z * 30
-                    reverb_val = 60 + alpha_z * 60
-                else:               # Excitement (aligned arousal)
-                    bright_val = 80 + beta_z * 47
-                    reverb_val = max(0, 50 - beta_z * 50)
-            elif emotion_label == 'fear':
-                if beta_z > 0.5:    # Hyper-vigilance / Panic
-                    bright_val = 90 + beta_z * 37
-                    reverb_val = 20 + alpha_z * 40
-                else:               # Paralyzed Dread
-                    bright_val = 30 + beta_z * 40
-                    reverb_val = 40 + alpha_z * 60
-            elif emotion_label == 'sad':
-                bright_val = 60 + beta_z * 40 if beta_z > 0.5 else 30 + beta_z * 30
-                reverb_val = 40 + alpha_z * 80
-            else:  # neutral
-                bright_val = 50 + beta_z * 60
-                reverb_val = 40 + alpha_z * 80
-
-            # Trend modifiers
-            reverb_val += alpha_trend * 40
-            bright_val += beta_trend  * 25
-
-            # Chorus (CC 93) — Theta shimmer
-            if emotion_label == 'fear':
-                chorus_val = 30 + theta_z * 90
-            elif emotion_label == 'neutral':
-                chorus_val = theta_z * 100
-            else:
-                chorus_val = theta_z * 60
-
-            # Vibrato (CC 1) — Gamma focus
-            if emotion_label == 'happy':
-                vibrato_val = gamma_z * 100
-            elif emotion_label == 'fear':
-                vibrato_val = 20 + gamma_z * 80
-            else:
-                vibrato_val = gamma_z * 60
-
-            # Tremolo (CC 92) — Delta fatigue / heaviness
-            if emotion_label in ('sad', 'fear'):
-                tremolo_val = 20 + delta_z * 80
-            elif emotion_label == 'happy':
-                tremolo_val = delta_z * 50
-            else:
-                tremolo_val = delta_z * 60
-            tremolo_val += delta_trend * 50
-
-            # 5. FAA - Panning (CC 10) + Chorus / Reverb spatial modifiers
-            pan_val = 64 - np.clip(asymmetry * 20, -32, 32)
-            if asymmetry > 0.1:     # Approach / Engagement
-                chorus_mod = asymmetry * 25
-                reverb_mod = -asymmetry * 20
-            elif asymmetry < -0.1:  # Withdrawal / Avoidance
-                chorus_mod = abs(asymmetry) * 55
-                reverb_mod = abs(asymmetry) * 35
-            else:
-                chorus_mod = 0
-                reverb_mod = 0
-
-            # Neural EQ (CC 71) & Expression / Compression (CC 11)
-            res_val        = 30 + gamma_z * 70
-            expression_val = 70 + ((beta_z + gamma_z) / 2.0) * 57
-
             self.send_cc(synth, ch, 74, bright_val)
             self.send_cc(synth, ch, 91, reverb_val + reverb_mod)
             self.send_cc(synth, ch, 93, chorus_val + chorus_mod)
@@ -176,7 +176,7 @@ class EEGTexturingEngine:
         # Clamp the CC value to MIDI interval [0, 127]
         synth.cc(ch, ctrl, int(max(0, min(127, val))))
 
-    def trend(self, band: str) -> float:
+    def compute_trend(self, band: str) -> float:
         # Trend of z-score changes
         h = self.z_history[band]
         

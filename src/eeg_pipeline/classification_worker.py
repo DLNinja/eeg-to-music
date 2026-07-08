@@ -1,55 +1,43 @@
-# Classificaiton Worker runs background thread with the processing stages:
-# Preprocessing, Feature Extraction and Classification
+# Classification Worker — receives pre-extracted DE features and classifies them
+# Maintains a rolling history of features for temporal smoothing,
+# then runs the model and emits (probs, timestamp).
 
 import numpy as np
 import torch
 from queue import Queue
 from PyQt5.QtCore import pyqtSignal, QObject
 
-from src.eeg_pipeline.signal_processing import RealtimeProcessor, n_channels
-from src.eeg_pipeline.emotion_result import EmotionResult
 
 class ClassificationWorker(QObject):
-    
-    thread_result = pyqtSignal(object)  # EmotionResult containing computation results
-    all_done      = pyqtSignal()        # Signal emitted when queue drains after finish()
 
-    def __init__(self, model, stft_n: int, sample_rate: int):
+    classification_done = pyqtSignal(object, object)  # probs (ndarray), timestamp
+    all_done            = pyqtSignal()
+
+    def __init__(self, model):
         super().__init__()
-        self.model  = model
-        self.stft_n = stft_n
-        self.sf     = sample_rate
-        self.processor = RealtimeProcessor(fs=sample_rate)
-        self.queue   = Queue()
-        self.running = False
-        self.raw_features       = []
-        self.smoothed_asymmetry = None
+        self.model       = model
+        self.queue       = Queue()
+        self.running     = False
+        self.raw_features = []  # rolling 20-frame DE history
 
     def set_model(self, model):
-        #Set the PyTorch model used for classification
         self.model = model
 
     def reset(self):
-        self.processor.reset()
         self.raw_features = []
-        self.smoothed_asymmetry = None
-
         while not self.queue.empty():
             try:
                 self.queue.get_nowait()
             except Exception:
                 break
 
-    def enqueue(self, segment: np.ndarray, timestamp: float = None):
-        # Add segment + timestamp to processing queue
-        self.queue.put(("segment", (segment.copy(), timestamp)))
+    def enqueue(self, de_features: np.ndarray, timestamp: float = None):
+        self.queue.put(("de", (de_features, timestamp)))
 
     def finish(self):
-        # Signal that there are no more segments to process
         self.queue.put(("finish", None))
 
     def stop(self):
-        # Stop the worker, discard remaining queue items
         self.running = False
         self.queue.put(("stop", None))
 
@@ -57,9 +45,7 @@ class ClassificationWorker(QObject):
         return self.queue.empty()
 
     def run(self):
-        # Start main processing loop
         self.running = True
-
         while self.running:
             tag, data = self.queue.get()
             if tag == "stop":
@@ -67,32 +53,14 @@ class ClassificationWorker(QObject):
             elif tag == "finish":
                 self.all_done.emit()
                 break
-            elif tag == "segment":
-                seg_data, ts = data
-                self.process(seg_data, ts)
+            elif tag == "de":
+                de, ts = data
+                probs = self._classify(de)
+                self.classification_done.emit(probs, ts)
 
-    def apply_filter(self, segment: np.ndarray) -> np.ndarray:
-        # Filter segment using the RealtimeProcessor
-        return self.processor.filter(segment)
-
-    def extract_features(self, filtered: np.ndarray) -> tuple:
-        # Runs an FFT to extract bandpowers, and compute DE and FAA features
-        return self.processor.analyze(filtered, stft_n=self.stft_n)
-
-    def smooth_asymmetry(self, band_powers: dict):
-        # Smooth FAA over a rolling 5-second window
-        raw = band_powers.get('asymmetry', 0.0)
-
-        if self.smoothed_asymmetry is None:
-            self.smoothed_asymmetry = raw
-        else:
-            self.smoothed_asymmetry = 0.25 * raw + 0.75 * self.smoothed_asymmetry
-        band_powers['asymmetry'] = self.smoothed_asymmetry
-
-    def classify(self, de_features: np.ndarray) -> np.ndarray:
+    def _classify(self, de_features: np.ndarray) -> np.ndarray:
         # Smooth DE features over a rolling 5-second window, then run the model
         self.raw_features.append(de_features)
-
         if len(self.raw_features) > 20:
             self.raw_features.pop(0)
 
@@ -109,12 +77,3 @@ class ClassificationWorker(QObject):
         else:
             probs = np.full(4, 0.25)
         return probs
-
-    def process(self, segment: np.ndarray, timestamp: float):
-        # Full pipeline, provides in EmotionResult object the pipeline results
-        filtered   = self.apply_filter(segment)
-        de, powers = self.extract_features(filtered)
-        probs      = self.classify(de)
-        self.smooth_asymmetry(powers)
-
-        self.thread_result.emit(EmotionResult(de, probs, timestamp, powers))
