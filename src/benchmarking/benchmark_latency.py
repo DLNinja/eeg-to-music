@@ -10,13 +10,11 @@ from src.model.emotion_classifier import EEGResNet
 
 warnings.filterwarnings("ignore")
 
-# --- MindToMusic Constants ---
+# MindToMusic Parameters
 K_INSTANCES = 10000
 RHO = 0.1
 
-# --- MindToMusic Functions from Notebook ---
 def select_instances(X_source, y_source, X_target_cal, y_target_cal, total_k=K_INSTANCES):
-    """Exact function from MindToMusic_EEG.ipynb"""
     if len(np.unique(y_target_cal)) < 2:
         indices = np.random.choice(len(X_source), min(len(X_source), total_k), replace=False)
         return X_source[indices], y_source[indices]
@@ -49,10 +47,6 @@ def select_instances(X_source, y_source, X_target_cal, y_target_cal, total_k=K_I
     return X_source[selected_indices], y_source[selected_indices]
 
 def get_sstm_mapping_model(X_source_sel, y_source_sel, X_target_cal, y_target_cal):
-    """
-    Extracts the Ridge Training part of style_transfer_mapping from the notebook
-    so we can train it once during calibration, and just use .predict() during real-time inference.
-    """
     classes = np.unique(y_target_cal)
     mu_source = {}
     mu_target = {}
@@ -80,38 +74,26 @@ def get_sstm_mapping_model(X_source_sel, y_source_sel, X_target_cal, y_target_ca
 
 
 def setup_mind_to_music_pipeline():
-    """
-    Simulates the calibration phase of the exact MindToMusic pipeline using dummy data.
-    (Because the SEED IV dataset is not available in this local workspace).
-    """
     scaler_source = StandardScaler()
     scaler_target = StandardScaler()
     
-    # 1. Dummy calibration data (since SEED is not local)
     X_source = np.random.randn(200, 310)
     y_source = np.random.randint(0, 4, 200)
     X_cal = np.random.randn(50, 310)
     y_cal = np.random.randint(0, 4, 50)
     
-    # Scale exactly like notebook
     X_source = scaler_source.fit_transform(X_source)
     X_cal = scaler_target.fit_transform(X_cal)
     
-    # 2. Select Instances (Exact notebook function)
     X_source_sel, y_source_sel = select_instances(X_source, y_source, X_cal, y_cal, total_k=100)
-    
-    # 3. Train Mapping Model (Exact notebook function logic)
     ridge = get_sstm_mapping_model(X_source_sel, y_source_sel, X_cal, y_cal)
     
-    # 4. Train SVC (Exact notebook configuration)
     clf_sstm = SVC(kernel='rbf', C=1.0, gamma='scale', probability=True)
     clf_sstm.fit(X_source_sel, y_source_sel)
     
-    # Return the trained scaler, mapping model, and SVC for real-time inference
     return scaler_target, ridge, clf_sstm
 
 def setup_resnet():
-    """Loads the EEGResNet PyTorch model."""
     device = torch.device('cpu')
     model = EEGResNet(num_classes=4).to(device)
     
@@ -120,7 +102,7 @@ def setup_resnet():
         checkpoint = torch.load(model_path, map_location=device)
         model.load_state_dict(checkpoint["model_state"])
     except Exception as e:
-        pass # Expected on shallow V2 due to state dict size mismatch
+        pass
     
     model.eval()
     return model, device
@@ -142,7 +124,7 @@ def run_benchmark():
     # ==========================================
     resnet_latencies = []
     with torch.no_grad():
-        for i in range(10): # Warmup
+        for i in range(10):
             t = torch.tensor(test_chunks[i]).to(device)
             _ = resnet(t)
             
@@ -161,8 +143,6 @@ def run_benchmark():
     # 2. Benchmark MindToMusic (SSTM + SVC)
     # ==========================================
     m2m_latencies = []
-    
-    # Warmup
     for i in range(10):
         c_flat = test_chunks[i].reshape(1, -1)
         c_scaled = scaler.transform(c_flat)
@@ -172,8 +152,6 @@ def run_benchmark():
     for chunk in test_chunks:
         start_time = time.perf_counter()
         
-        # Real-time MindToMusic Inference Pipeline:
-        # 1. Flatten Data -> 2. Target Scaler -> 3. SSTM Ridge Mapping -> 4. SVC Classifier
         c_flat = chunk.reshape(1, -1)
         c_scaled = scaler.transform(c_flat)
         c_mapped = ridge.predict(c_scaled)

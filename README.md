@@ -1,4 +1,4 @@
-# Piano Music Generator MVP - Technical Guide
+# Emotional EEG-based Music Generatorion  - Technical Guide
 
 This guide explains the core music generation logic implemented in `src/music/midi_generator.py`. The system translates EEG-derived emotion probabilities (Valence and Arousal) into professional-grade piano compositions using a blend of music theory, Markov chains, and dynamic state management.
 
@@ -37,5 +37,3 @@ The melody provides the narrative thread of the music:
 - **Harmonic Adherence**: A strict "Dissonance Guard" snaps melodic notes to the current chord tones (75-95% adherence) to prevent clashing, while allowing enough variety for modal expression.
 - **Register Management**: Automatically shifts the melody register based on intensity—lower for brooding Fear passages and higher for "Awakening" or "Hope" spikes.
 
----
-*This guide summarizes the logic for the "Completed Piano Music Generator MVP".*

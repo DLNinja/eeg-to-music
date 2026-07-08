@@ -1,14 +1,3 @@
-"""
-Sliding-Window Cross-Validation Benchmark for Self-Recorded BDF Data.
-
-Strategy:
-  - Fear has the fewest samples (N_fear). All fear data is used in every iteration.
-  - For each other emotion, the data is split into non-overlapping windows of size N_fear.
-  - If there's a remainder, a final smaller window is created, and fear is subsampled
-    to match for that iteration (keeping classes balanced).
-  - All combinations of windows across emotions are evaluated.
-  - Results are averaged to produce robust accuracy estimates and confidence intervals.
-"""
 
 import os
 import itertools
@@ -33,8 +22,6 @@ warnings.filterwarnings("ignore")
 # MindToMusic parameters
 K_INSTANCES = 10000
 RHO = 0.1
-
-# ─── SSTM helpers (unchanged from original) ───────────────────────────
 
 def select_instances(X_source, y_source, X_target_cal, y_target_cal, total_k=K_INSTANCES):
     if len(np.unique(y_target_cal)) < 2:
@@ -95,15 +82,13 @@ def get_sstm_mapping_model(X_source_sel, y_source_sel, X_target_cal, y_target_ca
     return ridge
 
 
-# ─── Sliding-Window Logic ─────────────────────────────────────────────
-
 def build_class_windows(y_target, min_class_count):
-    """
-    For each emotion class, split sorted indices into non-overlapping
-    windows of size `min_class_count`. Returns a dict:
-      { class_label: [ [indices_window_0], [indices_window_1], ... ] }
-    If remainder exists, a final smaller window is included.
-    """
+    # For each emotion type, split sorted indices into non-overlapping
+    # windows of size `min_class_count` (which is the Fear class count).
+    # If remainder exists, a final smaller window is included.
+    # Returns a dict:
+    #  { class_label: [ [indices_window_0], [indices_window_1], ... ] }
+
     windows = {}
     for c in np.unique(y_target):
         idx = np.sort(np.where(y_target == c)[0])
@@ -119,11 +104,9 @@ def run_single_iteration(iter_num, total_iters, class_indices,
                          X_target, X_target_flat, y_target,
                          X_source_scaled, y_source,
                          model_path, cal_ratio=0.40):
-    """
-    Run one iteration of the benchmark with the given class indices.
-    Returns (m2m_acc, resnet_acc, y_test, m2m_preds, resnet_preds).
-    """
-    # The window size for this iteration (may be smaller for remainder windows)
+    # Run one iteration of the benchmark with the given class indices.
+    # Returns (mind2music_acc, resnet_acc, y_test, mind2music_preds, resnet_preds).
+
     window_size = min(len(idx) for idx in class_indices.values())
 
     X_cal_flat_list, X_test_flat_list = [], []
@@ -131,7 +114,6 @@ def run_single_iteration(iter_num, total_iters, class_indices,
     X_cal_3d_list, X_test_3d_list = [], []
 
     for c, idx in class_indices.items():
-        # For balanced classes: subsample to the smallest window in this iteration
         if len(idx) > window_size:
             np.random.seed(42 + iter_num)
             idx = np.sort(np.random.choice(idx, window_size, replace=False))
@@ -155,7 +137,7 @@ def run_single_iteration(iter_num, total_iters, class_indices,
     X_cal_3d = np.concatenate(X_cal_3d_list)
     X_test_3d = np.concatenate(X_test_3d_list)
 
-    # ── MindToMusic SSTM ──
+    # MindToMusic SSTM-IS 
     scaler_target = StandardScaler()
     X_cal_scaled = scaler_target.fit_transform(X_cal_flat)
     X_test_scaled = scaler_target.transform(X_test_flat)
@@ -173,14 +155,14 @@ def run_single_iteration(iter_num, total_iters, class_indices,
     m2m_preds = clf_sstm.predict(X_test_mapped)
     m2m_acc = accuracy_score(y_test, m2m_preds)
 
-    # ── ResNet Fine-Tuning ──
+    # ResNet Calibrated 
     device = torch.device('cpu')
     model = EEGResNet(num_classes=4).to(device)
     checkpoint = torch.load(model_path, map_location=device)
     try:
         model.load_state_dict(checkpoint["model_state"])
     except Exception:
-        pass  # Train from scratch if architecture mismatch
+        pass  
 
     model.train()
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
@@ -225,7 +207,7 @@ def run_single_iteration(iter_num, total_iters, class_indices,
     return m2m_acc, resnet_acc, y_test, m2m_preds, resnet_preds
 
 
-# ─── Main Pipeline ────────────────────────────────────────────────────
+# ─── Main Test Pipeline ────────────────────────────────────────────────────
 
 def test_pipeline():
     print("=" * 70)
@@ -252,10 +234,10 @@ def test_pipeline():
         marker = " <- bottleneck (fixed)" if c == min_class else f" -> {n_windows} windows of {min_count}"
         print(f"  {emotions[int(c)]}: {n} samples{marker}")
 
-    # Build non-overlapping windows
+    # Non-overlapping windows
     all_windows = build_class_windows(y_target, min_count)
 
-    # Generate all combinations of windows (one per class)
+    # All combinations of windows (one per class)
     class_labels = sorted(all_windows.keys())
     window_lists = [list(range(len(all_windows[c]))) for c in class_labels]
     all_combos = list(itertools.product(*window_lists))
@@ -362,7 +344,6 @@ def test_pipeline():
     bp['boxes'][0].set_facecolor('#4A90D9')
     bp['boxes'][1].set_facecolor('#D94A4A')
 
-    # Overlay individual points
     for i, (accs, color) in enumerate([(all_m2m_accs, '#2C5F9E'), (all_resnet_accs, '#9E2C2C')]):
         jitter = np.random.uniform(-0.1, 0.1, len(accs))
         ax.scatter([i + j for j in jitter], np.array(accs)*100, color=color, alpha=0.6, s=30, zorder=3)
