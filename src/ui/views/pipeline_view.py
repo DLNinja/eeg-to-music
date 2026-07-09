@@ -12,7 +12,7 @@ from PyQt5.QtCore import pyqtSignal, Qt
 
 from src.eeg_pipeline.signal_processing import OfflineProcessor, sf
 from src.eeg_pipeline.emotion_classifier import load_emotion_model
-from src.music.midi_generator import generate_midi_from_emotions
+from src.music.orchestrators.midi_generator import generate_midi_from_emotions
 from src.ui.views.music_view import MusicView
 from src.ui.components.eeg_plots import EegPlotWidget, EmotionPlotWidget
 

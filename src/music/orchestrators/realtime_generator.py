@@ -1,3 +1,26 @@
+from src.ui import theme_config
+from src.music.rule_based import music_theory
+from src.music.rule_based import music_theory
+from src.music.rule_based import music_theory
+from src.music.rule_based import music_theory
+from src.music.rule_based import music_theory
+from src.music.rule_based import music_theory
+from src.music.rule_based import music_theory
+from src.music.rule_based import music_theory
+from src.music.rule_based import music_theory
+from src.music.rule_based import music_theory
+from src.music.rule_based import music_theory
+from src.music.rule_based import music_theory
+from src.music.rule_based import music_theory
+from src.music.rule_based import music_theory
+from src.music.rule_based import music_theory
+from src.music.rule_based import music_theory
+from src.music.rule_based import music_theory
+from src.music.rule_based import music_theory
+from src.music.rule_based import music_theory
+from src.music.rule_based import music_theory
+from src.music.rule_based import music_theory
+from src.music.rule_based import music_theory
 import os
 import time
 import mido
@@ -23,6 +46,7 @@ from ..utility.melody import (
 )
 from ..emotion_tracker.emotion_tracker import EmotionTracker
 from ..markov.markov_engine import MarkovEngine
+from src.eeg_pipeline.eeg_texturing_engine import EEGTexturingEngine
 
 
 class SuppressStderr:
@@ -79,8 +103,12 @@ class RealTimeMusicSynthesizer(QThread):
         self.tracker = EmotionTracker(window_size=10, spike_threshold=0.3)
         self.spike_state = SpikeState()
         self.markov_engine = MarkovEngine()
+        self.eeg_texturing_engine = EEGTexturingEngine()
         self.prev_melody_interval = 0
         self.synth = None
+
+        # Latest band powers (updated each second, used by EEG texturing)
+        self.current_band_powers = {}
 
         # Phase 3A: Anti-trill tracker
         self.consecutive_trill_count = 0
@@ -135,13 +163,22 @@ class RealTimeMusicSynthesizer(QThread):
             print(f"[RealTimeSynth] Error: Failed to initialize FluidSynth: {e}")
             self.synth = None
 
-    def update_emotion(self, probs, timestamp):
+    def update_emotion(self, probs, timestamp, band_powers=None):
+        """Receive a new 1-second classification result.
+
+        Drives EEGTexturingEngine.process() so Z-score baseline, per-band scalars,
+        and trend history are all updated in one call on the main thread.
+        """
         with QMutexLocker(self.mutex):
             # Update the continuous V-A tracker
             dominant_idx = int(np.argmax(probs))
             confidence = float(probs[dominant_idx])
             self.tracker.update_from_discrete(dominant_idx, confidence)
-            
+
+            if band_powers is not None:
+                self.current_band_powers = band_powers
+                self.eeg_texturing_engine.process(band_powers)
+
             self.update_queue.append((probs, timestamp))
 
     def play(self):
@@ -186,6 +223,26 @@ class RealTimeMusicSynthesizer(QThread):
         self._all_notes_off()
         self.wait()
 
+    def _apply_eeg_texturing(self, emotion_label):
+        # Apply CC mapping to EEGTexturingEngine.
+        # Copies band_z_scalars, band_trends and asymmetry under the mutex 
+        # then calls apply_cc() outside the lock.
+        
+        if not self.synth:
+            return
+        with QMutexLocker(self.mutex):
+            band_z_scalars = dict(self.eeg_texturing_engine.band_z_scalars)
+            band_trends    = dict(self.eeg_texturing_engine.band_trends)
+            asymmetry      = float(self.current_band_powers.get('asymmetry', 0.0))
+
+        self.eeg_texturing_engine.apply_cc(
+            emotion_label  = emotion_label,
+            band_z_scalars = band_z_scalars,
+            band_trends    = band_trends,
+            asymmetry      = asymmetry,
+            synth          = self.synth,
+        )
+
     def _all_notes_off(self):
         if not self.synth: return
         for channel in [0, 1]:
@@ -197,7 +254,7 @@ class RealTimeMusicSynthesizer(QThread):
         self.fear_sustain_active = False
 
     def set_volume(self, value):
-        """Sets the volume (CC 7) for all active channels (0 and 1)."""
+        # Sets the volume (CC 7) for all active channels (0 and 1)
         if self.synth:
             self.synth.cc(0, 7, value)
             self.synth.cc(1, 7, value)
@@ -616,6 +673,9 @@ class RealTimeMusicSynthesizer(QThread):
         velocity, chosen_ratios, sec_per_beat = self._compute_dynamics(
             emotion_cat, macro_a, micro_a, spike_intensity, macro_label
         )
+
+        # EEG Texturing: map band power Z-scores to MIDI CCs
+        self._apply_eeg_texturing(emotion_cat)
 
         harmonic_rhythm = compute_harmonic_rhythm(macro_a, emotion_cat, self.emotion_streak)
 

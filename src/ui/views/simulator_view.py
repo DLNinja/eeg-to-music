@@ -31,7 +31,7 @@ from src.ui.components.data_stream import (
     DEFAULT_BYTES_PER_SAMPLE,
     DEFAULT_SAMPLES_PER_PACKET
 )
-from src.music.realtime_generator import RealTimeMusicSynthesizer
+from src.music.orchestrators.realtime_generator import RealTimeMusicSynthesizer
 
 
 # ──────────────────────────────────────────────────────

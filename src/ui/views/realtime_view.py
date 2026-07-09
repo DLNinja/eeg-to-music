@@ -17,7 +17,7 @@ from src.eeg_pipeline.segment_processor import SegmentProcessor
 from src.ui.components.eeg_plots import EegPlotWidget, EmotionPlotWidget, BandZScorePlotWidget, AsymmetryGaugeWidget
 from src.ui.components.piano_roll import PianoRollWidget
 from src.ui.components.channel_selector import ChannelSelectorWidget
-from src.music.realtime_generator import RealTimeMusicSynthesizer
+from src.music.orchestrators.realtime_generator import RealTimeMusicSynthesizer
 
 
 # ──────────────────────────────────────────────────────
