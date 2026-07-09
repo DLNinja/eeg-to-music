@@ -6,8 +6,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
     QFileDialog, QPushButton, QMessageBox, QSlider, QScrollBar
 )
-from PyQt5.QtGui import QPainter, QColor, QPen, QPolygonF
-from PyQt5.QtCore import pyqtSignal, Qt, QThread, QMutex, QMutexLocker, QRectF, QPointF, QObject
+from PyQt5.QtCore import pyqtSignal, Qt, QThread, QMutex, QMutexLocker, QObject
 from src.ui.components.piano_roll import PianoRollWidget
 
 class SuppressStderr:

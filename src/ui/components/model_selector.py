@@ -1,12 +1,10 @@
 import os
-import torch
 from PyQt5.QtWidgets import QWidget, QHBoxLayout, QLabel, QComboBox, QPushButton, QMessageBox
 from PyQt5.QtCore import pyqtSignal
 from src.eeg_pipeline.emotion_classifier import MODEL_ARCHITECTURES, load_emotion_model, DEFAULT_MODEL_PATH
 
 class ModelSelectorWidget(QWidget):
-    """Horizontal selector for choosing model architecture and checkpoint files."""
-    model_loaded = pyqtSignal(object, str, str)  # model_instance, arch_name, checkpoint_path
+    model_loaded = pyqtSignal(object, str, str)  
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -46,7 +44,6 @@ class ModelSelectorWidget(QWidget):
             
         pt_files = sorted(f for f in os.listdir(classifiers_dir) if f.endswith(".pt"))
 
-        # Always pre-select the preferred checkpoint (matching DEFAULT_MODEL_PATH)
         preferred = os.path.basename(DEFAULT_MODEL_PATH)
         if preferred in pt_files:
             pt_files.remove(preferred)

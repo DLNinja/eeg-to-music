@@ -17,7 +17,7 @@ class HomeView(QWidget):
     navigate_to_music_signal = pyqtSignal()
     navigate_to_realtime_signal = pyqtSignal()
     navigate_to_simulator_signal = pyqtSignal()
-    theme_changed_signal = pyqtSignal(str)  # "dark" or "light"
+    theme_changed_signal = pyqtSignal(str)  
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -45,7 +45,6 @@ class HomeView(QWidget):
 
         layout.addSpacing(40)
 
-        # Animated icon buttons in a 2-column grid
         button_layout = QGridLayout()
         button_layout.setSpacing(20)
         
@@ -67,13 +66,12 @@ class HomeView(QWidget):
 
         self.simulator_btn = AnimatedIconButton("Headset Simulator", HeadsetCanvas)
         self.simulator_btn.clicked.connect(self.navigate_to_simulator_signal.emit)
-        # Span the 5th button across both columns, centered
+
         button_layout.addWidget(self.simulator_btn, 2, 0, 1, 2, alignment=Qt.AlignCenter)
 
         layout.addLayout(button_layout)
         layout.addSpacing(40)
 
-        # Theme selector
         theme_bar = QHBoxLayout()
         theme_bar.setAlignment(Qt.AlignCenter)
 
@@ -91,11 +89,9 @@ class HomeView(QWidget):
         layout.addLayout(theme_bar)
 
     def _setup_animation_timer(self):
-        """Single 30 fps timer driving all animation canvases."""
         self._anim_timer = QTimer(self)
-        self._anim_timer.setInterval(33)  # ~30 fps
+        self._anim_timer.setInterval(33)  
 
-        # Collect all animated button canvases
         self._canvases = [
             self.plotter_btn.canvas,
             self.pipeline_btn.canvas,

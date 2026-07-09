@@ -16,10 +16,6 @@ from src.music.orchestrators.midi_generator import generate_midi_from_emotions
 from src.ui.views.music_view import MusicView
 from src.ui.components.eeg_plots import EegPlotWidget, EmotionPlotWidget
 
-# ──────────────────────────────────────────────────────
-# Pipeline View (rewritten without matplotlib)
-# ──────────────────────────────────────────────────────
-
 class PipelineView(QWidget):
     navigate_to_home_signal = pyqtSignal()
     
@@ -30,15 +26,14 @@ class PipelineView(QWidget):
         self.mat_data = None
         self.trial_keys = []
         self.current_trial_data = None
-        self.sf = sf  # typically 200 Hz
+        self.sf = sf  
         
-        # Pipeline Data
-        self.emotion_probs = None # Will store shape (T, 4)
-        self.segment_len = 1  # 1 second windows
+        # Pipeline variables
+        self.emotion_probs = None 
+        self.segment_len = 1 
         self.stft_n = 256
         self.loaded_file_path = ""
         
-        # Load Model
         self.model = load_emotion_model()
         self._offline_proc = OfflineProcessor()
         
@@ -58,7 +53,6 @@ class PipelineView(QWidget):
         
         main_layout = QVBoxLayout(self.content_widget)
         
-        # Top toolbar: Back button & File selection & Run Model
         top_bar = QHBoxLayout()
         
         self.back_btn = QPushButton("← Back to Menu")
@@ -75,7 +69,6 @@ class PipelineView(QWidget):
         self.trial_combo.setEnabled(False)
         top_bar.addWidget(self.trial_combo)
         
-        # New Button: Run classification
         self.run_pipeline_btn = QPushButton("Run Emotion Classification")
         self.run_pipeline_btn.clicked.connect(self.run_classification)
         self.run_pipeline_btn.setEnabled(False)
@@ -91,10 +84,8 @@ class PipelineView(QWidget):
         top_bar.addStretch()
         main_layout.addLayout(top_bar)
         
-        # --- Controls Area ---
         controls_layout = QHBoxLayout()
         
-        # 1. Channel Selection UI
         channel_group = QGroupBox("Channel Selection")
         channel_layout = QHBoxLayout()
         
@@ -133,7 +124,6 @@ class PipelineView(QWidget):
         channel_group.setLayout(channel_layout)
         controls_layout.addWidget(channel_group)
         
-        # 2. Zoom / View Mode UI
         zoom_group = QGroupBox("Zoom & View")
         zoom_layout = QHBoxLayout()
         
@@ -163,13 +153,9 @@ class PipelineView(QWidget):
         
         main_layout.addLayout(controls_layout)
         
-        # Custom Plot Widgets (fixed heights — page scrolls vertically)
         self.eeg_plot = EegPlotWidget()
         self.eeg_plot.setFixedHeight(350)
         main_layout.addWidget(self.eeg_plot)
-
-        # Horizontal Scrollbar for Time navigation — lives here so it always
-        # sits directly below the EEG waveform it controls.
         self.time_scrollbar = QScrollBar(Qt.Horizontal)
         self.time_scrollbar.setMinimum(0)
         self.time_scrollbar.valueChanged.connect(self.plot_data)
@@ -179,18 +165,13 @@ class PipelineView(QWidget):
         self.emotion_plot.setFixedHeight(280)
         main_layout.addWidget(self.emotion_plot)
         
-        # Add visual separator
         separator = QFrame()
         separator.setFrameShape(QFrame.HLine)
         separator.setFrameShadow(QFrame.Sunken)
         main_layout.addWidget(separator)
-        
-        # Add embedded MusicView
         self.music_view = MusicView(embedded_mode=True)
         self.music_view.playback_progress_signal.connect(self.update_music_playhead)
         main_layout.addWidget(self.music_view)
-        
-        # Init view mode states
         self.on_view_mode_changed()
         
     def open_file(self):
@@ -211,7 +192,6 @@ class PipelineView(QWidget):
             self.loaded_file_path = file_path
             self.mat_data = scipy.io.loadmat(file_path)
             
-            # Extract keys that don't start with '__'
             self.trial_keys = [k for k in self.mat_data.keys() if not k.startswith('__')]
             self.trial_keys.sort()
             
@@ -247,10 +227,9 @@ class PipelineView(QWidget):
             
         key = self.trial_keys[index]
         self.current_trial_data = self.mat_data[key]
-        self.emotion_probs = None # Clear previous probabilities
+        self.emotion_probs = None 
         self.generate_music_btn.setEnabled(False)
         
-        # Update spinbox maximums based on data shape (channels)
         num_channels = self.current_trial_data.shape[0]
         self.spin_single.setMaximum(num_channels)
         self.spin_start.setMaximum(num_channels)
@@ -273,15 +252,12 @@ class PipelineView(QWidget):
         try:
             self.run_pipeline_btn.setText("Processing...")
             self.run_pipeline_btn.setEnabled(False)
-            # 1. Extract Features
             features          = self._offline_proc.extract_de_features(
                 self.current_trial_data, self.segment_len, self.stft_n, self.sf
             )
-            # 2. Smooth
             smoothed_features = self._offline_proc.smooth(features)
             
-            # 3. Predict
-            # shape required: (Batch, Channels=1, H=62, W=5)
+
             input_tensor = torch.tensor(smoothed_features, dtype=torch.float32).unsqueeze(1)
             
             with torch.no_grad():
@@ -304,7 +280,6 @@ class PipelineView(QWidget):
             return
             
         try:
-            # Parse file path: e.g. data/raw/eeg_seed/3/9_20140620.mat
             dataset = "unknown"
             session = "unknown"
             subject = "unknown"
@@ -376,7 +351,6 @@ class PipelineView(QWidget):
         num_channels = data.shape[0]
         num_samples = data.shape[1]
         
-        # Determine time window to plot
         if self.radio_full_view.isChecked():
             start_sample = 0
             end_sample = num_samples
@@ -391,7 +365,6 @@ class PipelineView(QWidget):
         plot_data = data[:, start_sample:end_sample]
         time_axis = np.arange(start_sample, end_sample) / self.sf
         
-        # 1. Build EEG channels
         channels = []
         title = "EEG Signal"
         
@@ -416,7 +389,6 @@ class PipelineView(QWidget):
 
         self.eeg_plot.set_data(channels, time_axis, title)
         
-        # 2. Build Emotion data
         start_time = start_sample / self.sf
         end_time = end_sample / self.sf
         
@@ -440,18 +412,6 @@ class PipelineView(QWidget):
         
     def update_music_playhead(self, time_s):
         self.emotion_plot.update_playhead(time_s)
-        if hasattr(self, 'music_playhead_line') and self.music_playhead_line is not None:
-            # Scale the music playback time to match the EEG timeline length
-            # (Because MIDI generator changes BPM dynamically, music duration != EEG duration)
-            if hasattr(self.music_view, 'total_time_s') and self.music_view.total_time_s > 0 and self.emotion_probs is not None:
-                total_eeg_s = len(self.emotion_probs) * self.segment_len
-                mapped_time_s = time_s * (total_eeg_s / self.music_view.total_time_s)
-            else:
-                mapped_time_s = time_s
-                
-            self.music_playhead_line.set_xdata([mapped_time_s, mapped_time_s])
-            self.music_playhead_line.set_visible(True)
-            self.canvas.draw_idle()
 
     def set_model(self, model):
         """Update the classification model."""

@@ -59,3 +59,10 @@ Thumbs.db
 *.midi
 *.zip
 test_*.py
+
+emopia_cls/
+music2emotion_model/
+
+
+__pycache__/
+*.pyc

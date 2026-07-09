@@ -20,14 +20,13 @@ class PlotView(QWidget):
         self.mat_data = None
         self.trial_keys = []
         self.current_trial_data = None
-        self.sf = 200  # Sampling frequency in Hz
+        self.sf = 200  
         
         self._setup_ui()
 
     def _setup_ui(self):
         main_layout = QVBoxLayout(self)
         
-        # Top toolbar: Back button & File selection
         top_bar = QHBoxLayout()
         
         self.back_btn = QPushButton("← Back to Menu")
@@ -47,10 +46,8 @@ class PlotView(QWidget):
         top_bar.addStretch()
         main_layout.addLayout(top_bar)
         
-        # --- Controls Area ---
         controls_layout = QHBoxLayout()
         
-        # 1. Channel Selection UI
         channel_group = QGroupBox("Channel Selection")
         channel_layout = QHBoxLayout()
         
@@ -89,7 +86,6 @@ class PlotView(QWidget):
         channel_group.setLayout(channel_layout)
         controls_layout.addWidget(channel_group)
         
-        # 2. Zoom / View Mode UI
         zoom_group = QGroupBox("Zoom & View")
         zoom_layout = QHBoxLayout()
         
@@ -119,18 +115,15 @@ class PlotView(QWidget):
         
         main_layout.addLayout(controls_layout)
         
-        # Custom QPainter Plot Widget (replaces matplotlib)
         self.eeg_plot = EegPlotWidget()
         self.eeg_plot.setMinimumHeight(400)
-        main_layout.addWidget(self.eeg_plot, 1)  # stretch factor
+        main_layout.addWidget(self.eeg_plot, 1)
         
-        # Horizontal Scrollbar for Time navigation
         self.time_scrollbar = QScrollBar(Qt.Horizontal)
         self.time_scrollbar.setMinimum(0)
         self.time_scrollbar.valueChanged.connect(self.plot_trial)
         main_layout.addWidget(self.time_scrollbar)
         
-        # Init view mode states
         self.on_view_mode_changed()
         
     def open_file(self):
