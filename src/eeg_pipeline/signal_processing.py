@@ -129,40 +129,40 @@ class RealtimeProcessor:
         self.fs  = fs
         nyq      = fs / 2.0
         self.sos = butter(4, [0.1 / nyq, 75.0 / nyq], btype='band', output='sos')
-        self._zi_template = sosfilt_zi(self.sos)
-        self._zi: np.ndarray | None = None
+        self.zi_template = sosfilt_zi(self.sos)
+        self.zi: np.ndarray | None = None
 
         # 50Hz notch filter for mainline noise removal
         b, a = iirnotch(50.0, 30.0, fs)
         self.sos_notch = tf2sos(b, a)
-        self._zi_notch_template = sosfilt_zi(self.sos_notch)
-        self._zi_notch: np.ndarray | None = None
+        self.zi_notch_template = sosfilt_zi(self.sos_notch)
+        self.zi_notch: np.ndarray | None = None
 
     def reset(self):
         # Reset filter state for the start of a new session
 
-        n_sections = self._zi_template.shape[0]
-        self._zi   = np.zeros((n_channels, n_sections, 2))
+        n_sections = self.zi_template.shape[0]
+        self.zi   = np.zeros((n_channels, n_sections, 2))
         for ch in range(n_channels):
-            self._zi[ch] = self._zi_template.copy()
+            self.zi[ch] = self.zi_template.copy()
 
-        n_sections_notch = self._zi_notch_template.shape[0]
-        self._zi_notch = np.zeros((n_channels, n_sections_notch, 2))
+        n_sections_notch = self.zi_notch_template.shape[0]
+        self.zi_notch = np.zeros((n_channels, n_sections_notch, 2))
         for ch in range(n_channels):
-            self._zi_notch[ch] = self._zi_notch_template.copy()
+            self.zi_notch[ch] = self.zi_notch_template.copy()
 
     def filter(self, segment: np.ndarray) -> np.ndarray:
         # Apply both filters on the 1-second segment
         
         # Bandpass filter
-        zi_in                     = np.transpose(self._zi, (1, 0, 2))
+        zi_in                     = np.transpose(self.zi, (1, 0, 2))
         filtered, zi_out_T        = sosfilt(self.sos, segment, axis=1, zi=zi_in)
-        self._zi                  = np.transpose(zi_out_T, (1, 0, 2))
+        self.zi                  = np.transpose(zi_out_T, (1, 0, 2))
 
         # 50Hz Notch filter
-        zi_notch_in               = np.transpose(self._zi_notch, (1, 0, 2))
+        zi_notch_in               = np.transpose(self.zi_notch, (1, 0, 2))
         filtered_notch, zi_notch_out_T = sosfilt(self.sos_notch, filtered, axis=1, zi=zi_notch_in)
-        self._zi_notch            = np.transpose(zi_notch_out_T, (1, 0, 2))
+        self.zi_notch            = np.transpose(zi_notch_out_T, (1, 0, 2))
 
         return filtered_notch
 

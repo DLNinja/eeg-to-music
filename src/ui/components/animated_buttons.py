@@ -1,23 +1,12 @@
-"""
-animated_buttons.py — Animated icon buttons for the Home Screen.
-
-Each button contains a small QPainter-driven animation canvas on the left
-and a text label on the right, all inside a QPushButton so existing
-stylesheet theming (hover, press, disabled) works automatically.
-
-Animations are driven by an external QTimer calling canvas.advance().
-"""
+# These classes build the animations for the Home Screen buttons
 
 import math
 from PyQt5.QtWidgets import QPushButton, QHBoxLayout, QLabel, QWidget
 from PyQt5.QtCore import Qt, QRectF, QPointF
 from PyQt5.QtGui import QPainter, QPen, QColor, QFont, QPainterPath
 
-
-# ─── Base Canvas ────────────────────────────────────────────────────────────────
-
 class AnimationCanvas(QWidget):
-    """Base class for small animated icons drawn via QPainter."""
+    # Base animated button
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -42,8 +31,7 @@ class AnimationCanvas(QWidget):
         c.setAlpha(alpha)
         return c
 
-
-# ─── 1. EEG Signal Plotter — scrolling sine waves ──────────────────────────────
+# EEG Plot animation - Live waves, multiple sinus waves drawn
 
 class EegWaveCanvas(AnimationCanvas):
 
@@ -73,7 +61,7 @@ class EegWaveCanvas(AnimationCanvas):
         p.end()
 
 
-# ─── 2. Emotion Pipeline — connected nodes with traveling pulse ─────────────────
+# Emotion Pipeline animation — connected nodes with traveling pulse
 
 class PipelineCanvas(AnimationCanvas):
 
@@ -126,7 +114,7 @@ class PipelineCanvas(AnimationCanvas):
         p.end()
 
 
-# ─── 3. Music Player — bouncing equalizer bars ─────────────────────────────────
+# Music Player animation — bouncing equalizer bars
 
 class MusicBarsCanvas(AnimationCanvas):
 
@@ -155,7 +143,7 @@ class MusicBarsCanvas(AnimationCanvas):
         p.end()
 
 
-# ─── 4. Real-Time Classifier — V-A circumplex with orbiting dots ───────────────
+# Real-Time Classifier animation — circle with orbiting dots
 
 class CircumplexCanvas(AnimationCanvas):
 
@@ -194,7 +182,7 @@ class CircumplexCanvas(AnimationCanvas):
         p.end()
 
 
-# ─── 5. Headset Simulator — head outline with blinking electrodes ──────────────
+# Headset Simulator animation — head outline with blinking electrodes
 
 class HeadsetCanvas(AnimationCanvas):
 
@@ -218,7 +206,7 @@ class HeadsetCanvas(AnimationCanvas):
                            head_w + 8, head_h * 0.6)
         p.drawArc(band_rect, 30 * 16, 120 * 16)
 
-        # Electrode positions (relative offsets from head center)
+        # Electrode positions
         electrodes = [
             (-0.35, -0.20), (0.35, -0.20),   # frontal
             (-0.40,  0.15), (0.40,  0.15),    # temporal
@@ -237,7 +225,7 @@ class HeadsetCanvas(AnimationCanvas):
         p.end()
 
 
-# ─── 6. About — pulsing info circle ────────────────────────────────────────────
+# About animation — pulsing info circle
 
 class AboutCanvas(AnimationCanvas):
 
@@ -274,16 +262,13 @@ class AboutCanvas(AnimationCanvas):
         p.end()
 
 
-# ─── Composite Button Widget ───────────────────────────────────────────────────
+# Button Widget
 
 class AnimatedIconButton(QPushButton):
-    """
-    A QPushButton with an animated canvas on the left and a text label.
-    Inherits all existing QPushButton stylesheet theming automatically.
-    """
+    # QPushButton with an animated canvas on the left and a text label
 
     def __init__(self, text, canvas_cls, parent=None):
-        super().__init__("", parent)   # empty native text
+        super().__init__("", parent)
         self.setMinimumSize(400, 80)
 
         layout = QHBoxLayout(self)

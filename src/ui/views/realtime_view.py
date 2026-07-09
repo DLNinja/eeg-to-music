@@ -1,3 +1,8 @@
+# The RealTime View reads the .mat files from SEED-IV and simulates a real-time
+# processing of them, using timers to ensure the signals are read as if they
+# were collected by a headset live
+
+from src.eeg_pipeline import classification_worker
 import os
 import time
 import scipy.io
@@ -19,11 +24,6 @@ from src.ui.components.piano_roll import PianoRollWidget
 from src.ui.components.channel_selector import ChannelSelectorWidget
 from src.music.orchestrators.realtime_generator import RealTimeMusicSynthesizer
 
-
-# ──────────────────────────────────────────────────────
-# Real-Time View
-# ──────────────────────────────────────────────────────
-
 class RealTimeView(QWidget):
     navigate_to_home_signal = pyqtSignal()
     
@@ -40,7 +40,7 @@ class RealTimeView(QWidget):
         self.window_samples = self.sf
         
         self.is_playing = False
-        self.waiting_for_worker = False  # True when EEG done but worker still processing
+        self.waiting_for_worker = False  # True when EEG signal is done but worker still processing
         self.review_mode = False
         self.playhead_idx = 0
         self.playback_start_wall_time = 0.0
@@ -52,9 +52,8 @@ class RealTimeView(QWidget):
         self.speed_multiplier = 1
         self.timer_interval_ms = 50
         self.samples_per_tick = int(self.sf * self.timer_interval_ms / 1000)
-        
-        self.tick_count = 0 # For plot throttling
-        
+
+        self.tick_count = 0        
         self.stream_timer = QTimer(self)
         self.stream_timer.timeout.connect(self._on_timer_tick)
         
@@ -94,7 +93,6 @@ class RealTimeView(QWidget):
         self.scroll_area.setWidget(content_widget)
         main_layout = QVBoxLayout(content_widget)
         
-        # ── Top bar ──
         top_bar = QHBoxLayout()
         self.back_btn = QPushButton("← Back to Menu")
         self.back_btn.clicked.connect(self.stop_playback)
@@ -114,7 +112,6 @@ class RealTimeView(QWidget):
         top_bar.addStretch()
         main_layout.addLayout(top_bar)
         
-        # ── Playback controls (Left-aligned & static to prevent shifting) ──
         controls_bar = QHBoxLayout()
         
         self.play_btn = QPushButton("▶ Play")
@@ -145,10 +142,8 @@ class RealTimeView(QWidget):
         controls_bar.addStretch()
         main_layout.addLayout(controls_bar)
         
-        # ── Dashboard Cards Row (Fixed-width boxes to prevent any UI movement) ──
         dashboard_layout = QHBoxLayout()
         
-        # 1. Pipeline Status Card (Stretches)
         self.status_card = QWidget()
         self.status_card.setObjectName("dashboardCard")
         status_card_layout = QVBoxLayout(self.status_card)
@@ -162,7 +157,6 @@ class RealTimeView(QWidget):
         status_card_layout.addWidget(self.status_val)
         dashboard_layout.addWidget(self.status_card, stretch=2)
         
-        # 2. Playback Time Card (Fixed Width)
         self.time_card = QWidget()
         self.time_card.setFixedWidth(160)
         self.time_card.setObjectName("dashboardCard")
@@ -177,7 +171,6 @@ class RealTimeView(QWidget):
         time_card_layout.addWidget(self.time_val)
         dashboard_layout.addWidget(self.time_card)
         
-        # 3. Segments Classified Card (Fixed Width)
         self.segments_card = QWidget()
         self.segments_card.setFixedWidth(140)
         self.segments_card.setObjectName("dashboardCard")
@@ -192,7 +185,6 @@ class RealTimeView(QWidget):
         segments_card_layout.addWidget(self.segments_val)
         dashboard_layout.addWidget(self.segments_card)
         
-        # 4. Emotion Card (Fixed Width)
         self.emotion_card = QWidget()
         self.emotion_card.setFixedWidth(160)
         self.emotion_card.setObjectName("dashboardCard")
@@ -210,7 +202,6 @@ class RealTimeView(QWidget):
         dashboard_layout.setSpacing(10)
         main_layout.addLayout(dashboard_layout)
  
-        # ── Music Controls: Volume Row (Left-aligned) ──
         music_vol_bar = QHBoxLayout()
         music_vol_bar.addWidget(QLabel("🔈"))
         self.vol_slider = QScrollBar(Qt.Horizontal)
@@ -222,7 +213,6 @@ class RealTimeView(QWidget):
         music_vol_bar.addStretch()
         main_layout.addLayout(music_vol_bar)
         
-        # ── Music Controls: Playback Progress Row (Stretching) ──
         music_progress_bar = QHBoxLayout()
         self.time_label = QLabel("00:00 / 00:00")
         self.time_label.setStyleSheet("font-family: monospace; font-size: 14px;")
@@ -235,12 +225,10 @@ class RealTimeView(QWidget):
         
         main_layout.addLayout(music_progress_bar)
         
-        # ── Channel selection ──
         self.channel_selector = ChannelSelectorWidget(max_channels=n_channels)
         self.channel_selector.selection_changed.connect(self._on_channel_changed)
         main_layout.addWidget(self.channel_selector)
         
-        # ── Review controls (hidden during streaming) ──
         self.review_widget = QWidget()
         review_layout = QHBoxLayout(self.review_widget)
         review_layout.setContentsMargins(0, 0, 0, 0)
@@ -271,7 +259,6 @@ class RealTimeView(QWidget):
         self.review_widget.setVisible(False)
         main_layout.addWidget(self.review_widget)
         
-        # ── Plots (fixed heights — page scrolls vertically) ──
         self.eeg_plot = EegPlotWidget()
         self.eeg_plot.setFixedHeight(350)
         main_layout.addWidget(self.eeg_plot)
@@ -286,16 +273,13 @@ class RealTimeView(QWidget):
         self.emotion_plot.setFixedHeight(280)
         main_layout.addWidget(self.emotion_plot)
         
-        # ── Frontal Alpha Asymmetry Gauge ──
         self.asymmetry_gauge = AsymmetryGaugeWidget()
         main_layout.addWidget(self.asymmetry_gauge)
         
-        # ── Band Z-Score Plot ──
         self.zscore_plot = BandZScorePlotWidget()
         self.zscore_plot.setFixedHeight(220)
         main_layout.addWidget(self.zscore_plot)
         
-        # ── Piano Roll ──
         self.piano_roll = PianoRollWidget()
         self.piano_roll.setFixedHeight(320)
         main_layout.addWidget(self.piano_roll)
@@ -303,11 +287,9 @@ class RealTimeView(QWidget):
         return self.channel_selector.get_selected_channels()
     
     def _on_channel_changed(self):
-        """Refresh plots with new channel selection (during review or live)."""
+        # Refresh the EEG plot with new channel data
         if self.review_mode:
             self._update_review_plots()
-    
-    # ── File / Trial ─────────────────────────────────────
     
     def open_file(self):
         start_dir = "data/raw/eeg_seed" if os.path.exists("data/raw/eeg_seed") else "."
@@ -355,8 +337,6 @@ class RealTimeView(QWidget):
         self.eeg_plot.clear_data()
         self.emotion_plot.clear_data()
     
-    # ── Streaming state ──────────────────────────────────
-    
     def _reset_streaming_state(self):
         self.playhead_idx = 0
         self.playback_start_wall_time = time.time()
@@ -368,8 +348,6 @@ class RealTimeView(QWidget):
         self.seg_proc.reset()
         self.worker.reset()
         self._pending_band_powers.clear()
-    
-    # ── Playback controls ────────────────────────────────
     
     def start_playback(self):
         if self.current_trial_data is None:
@@ -428,8 +406,6 @@ class RealTimeView(QWidget):
         self.speed_multiplier = int(text.replace("x", ""))
         self.samples_per_tick = int(self.sf * self.timer_interval_ms / 1000 * self.speed_multiplier)
     
-    # ── Worker callbacks (main thread) ───────────────────
-    
     def _on_segment_processed(self, de, band_powers, timestamp):
         self._pending_band_powers[timestamp] = band_powers
         self.worker.enqueue(de, timestamp)
@@ -441,7 +417,6 @@ class RealTimeView(QWidget):
         # Send to synthesizer — EEGTexturingEngine.process() runs inside update_emotion
         self.synth.update_emotion(probs, timestamp, band_powers)
 
-        # Update Z-score plot & Asymmetry Gauge (sourced from EEGTexturingEngine)
         if self.is_playing or self.waiting_for_worker:
             te = self.synth.eeg_texturing_engine
             self.zscore_plot.append_z_scores(te.last_z_scores, te.is_calibrated, te.calibration_progress)
@@ -449,13 +424,11 @@ class RealTimeView(QWidget):
 
         n_segs = len(self.emotion_probs)
 
-        # Update emotion plot
         if (self.is_playing or self.waiting_for_worker) and n_segs > 0:
             probs_arr = np.array(self.emotion_probs)
             e_time = np.arange(n_segs)
             self.emotion_plot.set_data(probs_arr, e_time, 0, e_time[-1] + 1)
 
-        # Update status while waiting
         if self.waiting_for_worker:
             self.status_val.setText("Classifying remaining segments...")
             self.segments_val.setText(f"{n_segs} / {self.total_segments_expected}")
@@ -477,8 +450,6 @@ class RealTimeView(QWidget):
         self.play_btn.setText("▶ Replay")
         self.pause_btn.setEnabled(False)
         self.stop_btn.setEnabled(False)
-
-    # ── Review mode ──────────────────────────────────────
     
     def _enter_review_mode(self):
         self.review_mode = True
@@ -545,13 +516,11 @@ class RealTimeView(QWidget):
         if start_sample >= end_sample:
             return
         
-        # EEG plot with channel selection
         time_axis = np.arange(start_sample, end_sample) / self.sf
         channels = self._get_selected_channels()
         ch_data = [(label, self.current_trial_data[idx, start_sample:end_sample]) for label, idx in channels]
         self.eeg_plot.set_data(ch_data, time_axis, f"EEG Signal — Review")
         
-        # Emotion plot
         if len(self.emotion_probs) > 0:
             probs_arr = np.array(self.emotion_probs)
             emotion_time = np.arange(len(self.emotion_probs)) * 1.0
@@ -569,8 +538,6 @@ class RealTimeView(QWidget):
                     start_time, end_time
                 )
     
-    # ── Timer / Streaming (main thread — EEG only) ───────
-    
     def _on_timer_tick(self):
         if self.current_trial_data is None or not self.is_playing:
             return
@@ -586,14 +553,14 @@ class RealTimeView(QWidget):
         self._refresh_dashboard(total_samples)
 
     def _calculate_samples_to_process(self) -> int:
-        """Return wall-clock-corrected number of new samples to consume this tick."""
+        # Compute the number of samples to create
         elapsed = time.time() - self.playback_start_wall_time
         target  = int(elapsed * self.sf * self.speed_multiplier)
         n_new   = target - self.playhead_idx
         return max(0, min(n_new, 20 * self.samples_per_tick))
 
     def _check_playback_complete(self, total_samples: int) -> bool:
-        """Handle end-of-trial and worker drain. Returns True when playback is done."""
+        # Check if the playback is complete
         if self.playhead_idx < total_samples:
             return False
         self.is_playing = False
@@ -613,14 +580,14 @@ class RealTimeView(QWidget):
         return True
 
     def _advance_playhead(self, n_new: int, total_samples: int) -> np.ndarray:
-        """Slice n_new samples from the trial data and advance the playhead index."""
+        # Slice n_new samples from the trial data and advance the playhead index
         take = min(n_new, total_samples - self.playhead_idx)
         data = self.current_trial_data[:, self.playhead_idx:self.playhead_idx + take]
         self.playhead_idx += take
         return data
 
     def _feed_worker(self, new_data: np.ndarray):
-        """Fill the 1-second ring buffer and enqueue completed segments to the worker."""
+        # Fill the 1-second signal buffer and enqueue completed segments to the worker
         remaining  = new_data.shape[1]
         src_offset = 0
         while remaining > 0:
@@ -637,7 +604,7 @@ class RealTimeView(QWidget):
                 self.buffer_pos = 0
 
     def _refresh_eeg_plot(self, total_samples: int):
-        """Throttled EEG waveform update — fires every 3 ticks (~150 ms)."""
+        # Refresh the EEG waveform update — fires every 3 ticks (~150 ms)
         self.tick_count += 1
         if self.tick_count % 3 != 0:
             return
@@ -653,7 +620,7 @@ class RealTimeView(QWidget):
         )
 
     def _refresh_dashboard(self, total_samples: int):
-        """Update the time, segment-count, and dominant emotion dashboard labels."""
+        # Update the time, segment-count, and dominant emotion dashboard labels
         elapsed = self.playhead_idx / self.sf
         total   = total_samples / self.sf
         n_segs  = len(self.emotion_probs)
@@ -672,7 +639,6 @@ class RealTimeView(QWidget):
         self.piano_roll.add_note(start_time, duration, pitch, velocity)
         self.piano_roll.update_playhead(start_time)
         
-        # Update time UI
         self._update_time_ui_realtime(start_time, total_s)
 
     def _on_synth_state_update(self, mode, chord_type, bpm):
@@ -694,7 +660,7 @@ class RealTimeView(QWidget):
         self.time_label.setText(f"{cur_mins:02d}:{cur_secs:02d} / {total_mins:02d}:{total_secs:02d}")
 
     def set_model(self, model):
-        """Update the classification model."""
+        # Update the classification model
         self.model = model
         if hasattr(self, 'worker') and self.worker is not None:
             self.worker.set_model(model)

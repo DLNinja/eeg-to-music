@@ -1,3 +1,6 @@
+# This view is for the live-acquisiton headset case, where the user is prompted to
+# connect to te TCP/IP stream of the headset and employs the pipeline live
+
 import os
 import sys
 import math
@@ -33,11 +36,6 @@ from src.ui.components.data_stream import (
 )
 from src.music.orchestrators.realtime_generator import RealTimeMusicSynthesizer
 
-
-# ──────────────────────────────────────────────────────
-# Real-Time View
-# ──────────────────────────────────────────────────────
-
 class SimulatorView(QWidget):
     navigate_to_home_signal = pyqtSignal()
     
@@ -53,29 +51,23 @@ class SimulatorView(QWidget):
         self.is_connected = False
         self.playhead_samples = 0
         
-        # Buffers for UI
         self.display_channels = n_channels
-        self.display_buffer_len = self.sf * 10 # 10 seconds history
+        self.display_buffer_len = self.sf * 10
         self.display_data = np.zeros((self.display_channels, self.display_buffer_len))
         self.emotion_probs = []
         
-        # Full history buffer for post-disconnect review
-        self.full_history_capacity = self.sf * 60 * 5  # Pre-allocate 5 minutes
+        self.full_history_capacity = self.sf * 60 * 5
         self.full_history = np.zeros((self.display_channels, self.full_history_capacity))
         self.total_samples_received = 0
         self.review_mode = False
         self.awaiting_worker_finish = False
         
-        # Buffer for Worker Model
         self.classification_buffer = np.zeros((n_channels, self.window_samples))
         self.buffer_pos = 0
-        
         self.pending_samples = []
         
-        # Downsampling state (headset SR → model SR)
-        self.headset_sr = sf  # Updated at connect time; default = no resample
+        self.headset_sr = sf
         
-        # Update plotting at ~30Hz
         self.ui_timer = QTimer(self)
         self.ui_timer.timeout.connect(self._update_gui_plot)
         
@@ -91,9 +83,9 @@ class SimulatorView(QWidget):
         self.worker.moveToThread(self.worker_thread)
         self.seg_proc_thread.started.connect(self.seg_proc.run)
         self.worker_thread.started.connect(self.worker.run)
-        # SegmentProcessor → cache band_powers + forward de to ClassificationWorker
+        # SegmentProcessor - cache band_powers + forward de to ClassificationWorker
         self.seg_proc.segment_processed.connect(self._on_segment_processed)
-        # ClassificationWorker → combine with cached band_powers → emit result
+        # ClassificationWorker - combine with cached band_powers - emit result
         self.worker.classification_done.connect(self._on_classification_done)
         
         self.stream_thread = None
@@ -121,7 +113,6 @@ class SimulatorView(QWidget):
         self.scroll_area.setWidget(content_widget)
         main_layout = QVBoxLayout(content_widget)
         
-        # ── Top bar ──
         top_bar = QHBoxLayout()
         self.back_btn = QPushButton("← Back to Menu")
         self.back_btn.clicked.connect(self._on_back_clicked)
@@ -140,11 +131,9 @@ class SimulatorView(QWidget):
         
         main_layout.addLayout(top_bar)
         
-        # ── Connection Settings ──
         self.settings_group = QGroupBox("Connection Settings")
         settings_layout = QVBoxLayout()
         
-        # Row 1: Host + Port
         row1 = QHBoxLayout()
         row1.addWidget(QLabel("Host:"))
         self.input_host = QLineEdit(DEFAULT_HOST)
@@ -161,7 +150,6 @@ class SimulatorView(QWidget):
         row1.addStretch()
         settings_layout.addLayout(row1)
         
-        # Row 2: Channels + Sample Rate
         row2 = QHBoxLayout()
         row2.addWidget(QLabel("Channels:"))
         self.input_channels = QLineEdit(str(DEFAULT_CHANNELS))
@@ -186,7 +174,6 @@ class SimulatorView(QWidget):
         row2.addStretch()
         settings_layout.addLayout(row2)
         
-        # Row 3: Bytes/Sample + µV/Bit
         row3 = QHBoxLayout()
         row3.addWidget(QLabel("Bytes per Sample:"))
         self.input_bytes_per_sample = QLineEdit(str(DEFAULT_BYTES_PER_SAMPLE))
@@ -204,7 +191,6 @@ class SimulatorView(QWidget):
         row3.addStretch()
         settings_layout.addLayout(row3)
         
-        # Packet info label
         self.packet_info_lbl = QLabel()
         self._update_packet_info()
         settings_layout.addWidget(self.packet_info_lbl)
@@ -216,7 +202,6 @@ class SimulatorView(QWidget):
         self.settings_group.setLayout(settings_layout)
         main_layout.addWidget(self.settings_group)
         
-        # ── Network controls ──
         controls_bar = QHBoxLayout()
         
         self.start_btn = QPushButton("Start Listening")
@@ -248,10 +233,8 @@ class SimulatorView(QWidget):
         controls_bar.addStretch()
         main_layout.addLayout(controls_bar)
         
-        # ── Dashboard Cards Row (Fixed-width boxes to prevent any UI movement) ──
         dashboard_layout = QHBoxLayout()
         
-        # 1. Pipeline Status Card (Stretches)
         self.status_card = QWidget()
         self.status_card.setObjectName("dashboardCard")
         status_card_layout = QVBoxLayout(self.status_card)
@@ -265,7 +248,6 @@ class SimulatorView(QWidget):
         status_card_layout.addWidget(self.status_val)
         dashboard_layout.addWidget(self.status_card, stretch=2)
         
-        # 2. Segments Classified Card (Fixed Width)
         self.segments_card = QWidget()
         self.segments_card.setFixedWidth(140)
         self.segments_card.setObjectName("dashboardCard")
@@ -280,7 +262,6 @@ class SimulatorView(QWidget):
         segments_card_layout.addWidget(self.segments_val)
         dashboard_layout.addWidget(self.segments_card)
         
-        # 3. Emotion Card (Fixed Width)
         self.emotion_card = QWidget()
         self.emotion_card.setFixedWidth(160)
         self.emotion_card.setObjectName("dashboardCard")
@@ -298,7 +279,6 @@ class SimulatorView(QWidget):
         dashboard_layout.setSpacing(10)
         main_layout.addLayout(dashboard_layout)
         
-        # ── Music controls ──
         music_bar = QHBoxLayout()
         music_bar.addWidget(QLabel("🔈"))
         self.vol_slider = QScrollBar(Qt.Horizontal)
@@ -315,12 +295,10 @@ class SimulatorView(QWidget):
         music_bar.addStretch()
         main_layout.addLayout(music_bar)
         
-        # ── Channel selection ──
         self.channel_selector = ChannelSelectorWidget(max_channels=n_channels)
         self.channel_selector.selection_changed.connect(self._on_channel_changed)
         main_layout.addWidget(self.channel_selector)
         
-        # ── Review controls (hidden during streaming) ──
         self.review_widget = QWidget()
         review_layout = QHBoxLayout(self.review_widget)
         review_layout.setContentsMargins(0, 0, 0, 0)
@@ -351,7 +329,6 @@ class SimulatorView(QWidget):
         self.review_widget.setVisible(False)
         main_layout.addWidget(self.review_widget)
         
-        # ── Plots (fixed heights — page scrolls vertically) ──
         self.eeg_plot = EegPlotWidget()
         self.eeg_plot.setFixedHeight(250)
         main_layout.addWidget(self.eeg_plot)
@@ -367,7 +344,6 @@ class SimulatorView(QWidget):
         self.zscore_plot.setFixedHeight(250)
         main_layout.addWidget(self.zscore_plot)
         
-        # ── Piano Roll ──
         self.piano_roll = PianoRollWidget()
         self.piano_roll.setFixedHeight(320)
         main_layout.addWidget(self.piano_roll)
@@ -385,7 +361,7 @@ class SimulatorView(QWidget):
         self.navigate_to_home_signal.emit()
 
     def _on_detection_toggled(self, checked):
-        """When emotion detection is off, music must also be off."""
+        # music generation is off when classification is off
         if not checked:
             self.music_checkbox.setChecked(False)
             self.music_checkbox.setEnabled(False)
@@ -415,8 +391,6 @@ class SimulatorView(QWidget):
 
     def _on_synth_state_update(self, mode, chord_type, bpm):
         pass
-
-    # ── Channel helpers ──────────────────────────────────
     
     def _get_selected_channels(self):
         return self.channel_selector.get_selected_channels(self.display_channels)
@@ -439,7 +413,7 @@ class SimulatorView(QWidget):
         )
 
     def _clear_signal(self):
-        """Reset all buffers and plots while optionally staying connected."""
+        # Reset all buffers and plots
         self.playhead_samples = 0
         self.display_data = np.zeros((self.display_channels, self.display_buffer_len))
         self.emotion_probs = []
@@ -469,8 +443,6 @@ class SimulatorView(QWidget):
         self.review_mode = False
         self.review_widget.setVisible(False)
         self.time_scrollbar.setVisible(False)
-
-    # ── Streaming state ──────────────────────────────────
 
     def toggle_listening(self):
         if not self.is_connected:
@@ -506,9 +478,6 @@ class SimulatorView(QWidget):
         self.display_buffer_len = self.headset_sr * 10
         self.display_data = np.zeros((self.display_channels, self.display_buffer_len))
         
-        self.downsampled_display_len = sf * 10
-        self.downsampled_display_data = np.zeros((n_channels, self.downsampled_display_len))
-        
         self.emotion_probs = []
         self.full_history_capacity = self.headset_sr * 60 * 5
         self.full_history = np.zeros((self.display_channels, self.full_history_capacity))
@@ -531,10 +500,7 @@ class SimulatorView(QWidget):
         self.stream_thread.error_signal.connect(self.on_connection_error)
         self.stream_thread.disconnected_signal.connect(self.on_disconnected)
         
-        # Disable settings while connected
         self.settings_group.setEnabled(False)
-        
-        # Change state
         self.is_connected = True
         self.status_val.setText(f"Connected to {host}:{port}")
         self.emotion_val.setText("—")
@@ -543,9 +509,8 @@ class SimulatorView(QWidget):
         self.start_btn.setEnabled(True)
         
         self.stream_thread.start()
-        self.ui_timer.start(33) # ~30 fps
+        self.ui_timer.start(33)
         
-        # Start music if enabled
         if self.music_checkbox.isChecked():
             self.synth.play()
 
@@ -573,7 +538,6 @@ class SimulatorView(QWidget):
         self.start_btn.setText("Start Listening")
         self.settings_group.setEnabled(True)
         
-        # Pause music on disconnect (but keep piano roll visible for review)
         self.synth.pause()
 
     def on_new_data(self, all_samples):
@@ -591,8 +555,8 @@ class SimulatorView(QWidget):
         self.status_val.setText("Stream ended. Processing remaining data...")
         self.awaiting_worker_finish = True
         
-        # We handle entering review mode in `_on_classification_result`
-        # once the worker queue is empty, or immediately if already empty.
+        # We handle entering review mode in _on_classification_result
+        # once the worker queue is empty
         if self.seg_proc.is_empty() and self.worker.is_empty():
             self._enter_review_mode()
             
@@ -613,8 +577,6 @@ class SimulatorView(QWidget):
             self.worker.stop()
             self.worker_thread.quit()
             self.worker_thread.wait(2000)
-
-    # ── Review controls ──────────────────────────────────
 
     def _on_review_mode_changed(self):
         if not self.review_mode:
@@ -663,7 +625,6 @@ class SimulatorView(QWidget):
         if start_sample >= end_sample:
             return
             
-        # Plot EEG
         time_axis = np.arange(start_sample, end_sample) / self.headset_sr
         channels = self._get_selected_channels()
         ch_data = []
@@ -679,10 +640,9 @@ class SimulatorView(QWidget):
             
         self.eeg_plot.set_data(ch_data, time_axis, "EEG Signal — Review Mode")
         
-        # Plot Emotions
         if len(self.emotion_probs) > 0:
             probs_arr = np.array(self.emotion_probs)
-            emotion_time = np.arange(len(self.emotion_probs)) * 1.0 # 1 second segments
+            emotion_time = np.arange(len(self.emotion_probs)) * 1.0
             
             start_time = start_sample / self.headset_sr
             end_time = end_sample / self.headset_sr
@@ -698,7 +658,6 @@ class SimulatorView(QWidget):
                 )
 
     def _update_gui_plot(self):
-        """Timer callback (30 FPS): flush network samples, update buffers and EEG plot."""
         if not self.is_connected:
             return
         new_block = self._flush_pending_samples()
@@ -712,7 +671,7 @@ class SimulatorView(QWidget):
         self._refresh_eeg_plot()
 
     def _flush_pending_samples(self):
-        """Drain pending_samples list into a (channels, n) numpy array. Returns None if empty."""
+        # Move pending_samples list into a (channels, n) numpy array
         if not self.pending_samples:
             return None
         samples = self.pending_samples[:]
@@ -720,7 +679,8 @@ class SimulatorView(QWidget):
         return np.array(samples, dtype=np.float32).T
 
     def _update_history_buffer(self, new_block: np.ndarray):
-        """Append new samples to full_history, growing the array if needed."""
+        # Append new samples to full_history
+        # Array is extended if needed
         num_new = new_block.shape[1]
         if self.total_samples_received + num_new > self.full_history_capacity:
             self.full_history_capacity = max(
@@ -734,7 +694,6 @@ class SimulatorView(QWidget):
         self.total_samples_received += num_new
 
     def _update_display_buffer(self, new_block: np.ndarray):
-        """Shift the rolling 10-second display window left and insert new samples."""
         num_new = new_block.shape[1]
         shift = min(num_new, self.display_buffer_len)
         if shift < self.display_buffer_len:
@@ -742,7 +701,7 @@ class SimulatorView(QWidget):
         self.display_data[:, -shift:] = new_block[:, -shift:]
 
     def _feed_classification_buffer(self, new_block: np.ndarray):
-        """Fill 1-second window from new_block; downsample if needed; enqueue to worker."""
+        # Fill 1-second window from new_block, downsample if needed and enqueue to worker
         model_block = new_block[:min(new_block.shape[0], n_channels), :]
         if model_block.shape[0] < n_channels:
             pad = np.zeros((n_channels - model_block.shape[0], model_block.shape[1]), dtype=np.float32)
@@ -760,7 +719,6 @@ class SimulatorView(QWidget):
             remaining       -= take
             if self.buffer_pos >= self.window_samples:
                 ds_block = self._downsample_block(self.classification_buffer)
-                self._update_downsampled_display(ds_block)
                 seg_timestamp = (self.playhead_samples + src_offset) / self.headset_sr
                 self.seg_proc.enqueue(ds_block, seg_timestamp)
                 self.buffer_pos = 0
@@ -773,16 +731,7 @@ class SimulatorView(QWidget):
         down = self.headset_sr // g
         return scipy.signal.resample_poly(block, up, down, axis=1).astype(np.float32)
 
-    def _update_downsampled_display(self, ds_block: np.ndarray):
-        """Shift the downsampled rolling display buffer and insert the new block."""
-        ds_num   = ds_block.shape[1]
-        shift_ds = min(ds_num, self.downsampled_display_len)
-        if shift_ds < self.downsampled_display_len:
-            self.downsampled_display_data[:, :-shift_ds] = self.downsampled_display_data[:, shift_ds:]
-        self.downsampled_display_data[:, -shift_ds:] = ds_block[:, -shift_ds:]
-
     def _refresh_eeg_plot(self):
-        """Rebuild the per-channel display data with centering/offset and update the EEG plot."""
         cur_t   = self.playhead_samples / self.headset_sr
         t_start = max(0, cur_t - self.display_buffer_len / self.headset_sr)
         time_axis = np.linspace(t_start, cur_t, self.display_buffer_len)

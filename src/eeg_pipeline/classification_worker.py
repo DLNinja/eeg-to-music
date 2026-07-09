@@ -55,10 +55,10 @@ class ClassificationWorker(QObject):
                 break
             elif tag == "de":
                 de, ts = data
-                probs = self._classify(de)
+                probs = self.classify(de)
                 self.classification_done.emit(probs, ts)
 
-    def _classify(self, de_features: np.ndarray) -> np.ndarray:
+    def classify(self, de_features: np.ndarray) -> np.ndarray:
         # Smooth DE features over a rolling 5-second window, then run the model
         self.raw_features.append(de_features)
         if len(self.raw_features) > 20:

@@ -3,7 +3,7 @@ from PyQt5.QtCore import pyqtSignal
 
 
 class ChannelSelectorWidget(QWidget):
-    """Reusable channel selection widget with Single / Range / All modes."""
+    # Channel selection widget with Single / Range / All modes
     selection_changed = pyqtSignal()
     
     def __init__(self, max_channels=256, parent=None):

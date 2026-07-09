@@ -57,15 +57,15 @@ class SegmentProcessor(QObject):
                 break
             elif tag == "segment":
                 seg_data, ts = data
-                self._process(seg_data, ts)
+                self.process(seg_data, ts)
 
-    def _process(self, segment: np.ndarray, timestamp: float):
+    def process(self, segment: np.ndarray, timestamp: float):
         filtered         = self.processor.filter(segment)
         de, band_powers  = self.processor.analyze(filtered, stft_n=self.stft_n)
-        self._smooth_asymmetry(band_powers)
+        self.smooth_asymmetry(band_powers)
         self.segment_processed.emit(de, band_powers, timestamp)
 
-    def _smooth_asymmetry(self, band_powers: dict):
+    def smooth_asymmetry(self, band_powers: dict):
         # EMA smooth of FAA over a rolling 5-second window
         raw = band_powers.get('asymmetry', 0.0)
         if self.smoothed_asymmetry is None:

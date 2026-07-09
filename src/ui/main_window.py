@@ -30,7 +30,6 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # Create settings bar header
         self.settings_header = QWidget()
         self.settings_header.setObjectName("topSettingsBar")
         header_layout = QHBoxLayout(self.settings_header)
@@ -48,7 +47,6 @@ class MainWindow(QMainWindow):
 
         main_layout.addWidget(self.settings_header)
 
-        # Stacked widget for pages
         self.stacked_widget = QStackedWidget()
         main_layout.addWidget(self.stacked_widget)
         
@@ -59,7 +57,6 @@ class MainWindow(QMainWindow):
         self.realtime_view = RealTimeView()
         self.simulator_view = SimulatorView()
         
-        # Add views to stack
         self.stacked_widget.addWidget(self.home_view)
         self.stacked_widget.addWidget(self.plot_view)
         self.stacked_widget.addWidget(self.pipeline_view)
@@ -67,7 +64,6 @@ class MainWindow(QMainWindow):
         self.stacked_widget.addWidget(self.realtime_view)
         self.stacked_widget.addWidget(self.simulator_view)
         
-        # Connect navigation signals
         self.home_view.navigate_to_plot_signal.connect(self.show_plot_view)
         self.home_view.navigate_to_pipeline_signal.connect(self.show_pipeline_view)
         self.home_view.navigate_to_music_signal.connect(self.show_music_view)
@@ -80,10 +76,8 @@ class MainWindow(QMainWindow):
         self.realtime_view.navigate_to_home_signal.connect(self.show_home_view)
         self.simulator_view.navigate_to_home_signal.connect(self.show_home_view)
         
-        # Listen to page change to show/hide settings bar
         self.stacked_widget.currentChanged.connect(self._on_page_changed)
         
-        # Show HomeView initially
         self.stacked_widget.setCurrentWidget(self.home_view)
         self._on_page_changed(0)
 
@@ -98,7 +92,7 @@ class MainWindow(QMainWindow):
                 self._on_model_loaded(model, arch, chk_path)
 
     def _on_model_loaded(self, model, arch_name, checkpoint_path):
-        """Propagate loaded model to all classification views."""
+        # Make sure the same loaded model is used in all classification views
         self.pipeline_view.set_model(model)
         self.realtime_view.set_model(model)
         self.simulator_view.set_model(model)
@@ -122,7 +116,6 @@ class MainWindow(QMainWindow):
             palette.setColor(role, color)
         QApplication.instance().setPalette(palette)
         
-        # Update QPainter plot and custom widgets
         plot_colors = cfg["plot_colors"]
         self._apply_plot_colors(self.plot_view.eeg_plot, plot_colors)
         
