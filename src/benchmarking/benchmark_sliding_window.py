@@ -83,8 +83,8 @@ def get_sstm_mapping_model(X_source_sel, y_source_sel, X_target_cal, y_target_ca
 
 
 def build_class_windows(y_target, min_class_count):
-    # For each emotion type, split sorted indices into non-overlapping
-    # windows of size `min_class_count` (which is the Fear class count).
+    # For each emotion type, splits data into non-overlapping
+    # windows of size min_class_count (which is the Fear class count).
     # If remainder exists, a final smaller window is included.
     # Returns a dict:
     #  { class_label: [ [indices_window_0], [indices_window_1], ... ] }
@@ -104,7 +104,7 @@ def run_single_iteration(iter_num, total_iters, class_indices,
                          X_target, X_target_flat, y_target,
                          X_source_scaled, y_source,
                          model_path, cal_ratio=0.40):
-    # Run one iteration of the benchmark with the given class indices.
+    # Runs one iteration of the benchmark with the given class indices.
     # Returns (mind2music_acc, resnet_acc, y_test, mind2music_preds, resnet_preds).
 
     window_size = min(len(idx) for idx in class_indices.values())
@@ -207,21 +207,18 @@ def run_single_iteration(iter_num, total_iters, class_indices,
     return m2m_acc, resnet_acc, y_test, m2m_preds, resnet_preds
 
 
-# ─── Main Test Pipeline ────────────────────────────────────────────────────
-
+# Main Test Pipeline
 def test_pipeline():
     print("=" * 70)
     print("  SLIDING-WINDOW CROSS-VALIDATION BENCHMARK (Self-Recorded BDF)")
     print("=" * 70)
 
-    # Load BDF data
     print("\nLoading Target Data (Extracted BDF features)...")
     bdf_data = np.load("models/bdf/extracted_features.npz")
-    X_target = bdf_data['X']       # (N, 62, 5)
-    y_target = bdf_data['y']       # (N,)
+    X_target = bdf_data['X']       
+    y_target = bdf_data['y']       
     X_target_flat = X_target.reshape(X_target.shape[0], -1)
 
-    # Class distribution
     emotions = ['Neutral', 'Sad', 'Fear', 'Happy']
     class_counts = {c: int(np.sum(y_target == c)) for c in np.unique(y_target)}
     min_class = min(class_counts, key=class_counts.get)
@@ -234,7 +231,6 @@ def test_pipeline():
         marker = " <- bottleneck (fixed)" if c == min_class else f" -> {n_windows} windows of {min_count}"
         print(f"  {emotions[int(c)]}: {n} samples{marker}")
 
-    # Non-overlapping windows
     all_windows = build_class_windows(y_target, min_count)
 
     # All combinations of windows (one per class)
@@ -245,7 +241,6 @@ def test_pipeline():
     print(f"\nTotal iterations: {len(all_combos)} "
           f"({'x'.join(str(len(all_windows[c])) for c in class_labels)} combinations)")
 
-    # Load source SEED data (shared across iterations)
     print("\nLoading Source SEED Data...")
     source_data = np.load("models/de_stft_smooth.npz")
     X_source = source_data['X']
@@ -274,7 +269,6 @@ def test_pipeline():
     all_confusion_resnet = []
 
     for combo_idx, combo in enumerate(all_combos):
-        # Build the index dict for this combination
         class_indices = {}
         for i, c in enumerate(class_labels):
             class_indices[c] = all_windows[c][combo[i]]
@@ -296,7 +290,7 @@ def test_pipeline():
         all_confusion_m2m.append(confusion_matrix(y_test, m2m_preds, labels=[0,1,2,3]))
         all_confusion_resnet.append(confusion_matrix(y_test, resnet_preds, labels=[0,1,2,3]))
 
-    # ─── Aggregate Results ─────────────────────────────────────────────
+    # Results
     print(f"\n{'='*70}")
     print("  AGGREGATED RESULTS")
     print(f"{'='*70}")
@@ -312,7 +306,7 @@ def test_pipeline():
     for i, (m, r) in enumerate(zip(all_m2m_accs, all_resnet_accs)):
         print(f"    Iter {i+1}: SSTM={m*100:.1f}%  ResNet={r*100:.1f}%")
 
-    # ─── Averaged Confusion Matrices ───────────────────────────────────
+    # Confusion Matrices
     avg_cm_m2m = np.mean(all_confusion_m2m, axis=0)
     avg_cm_resnet = np.mean(all_confusion_resnet, axis=0)
 
@@ -335,7 +329,7 @@ def test_pipeline():
     plt.savefig("src/benchmarking/emotion_confusion_sliding_window.png", dpi=150)
     print(f"\nSaved confusion matrices to src/benchmarking/emotion_confusion_sliding_window.png")
 
-    # ─── Accuracy Distribution Plot ────────────────────────────────────
+    # Accuracy Distribution Plot
     fig, ax = plt.subplots(figsize=(8, 5))
     positions = [0, 1]
     bp = ax.boxplot([np.array(all_m2m_accs)*100, np.array(all_resnet_accs)*100],
@@ -358,7 +352,7 @@ def test_pipeline():
     plt.savefig("src/benchmarking/accuracy_distribution_sliding_window.png", dpi=150)
     print(f"Saved accuracy distribution to src/benchmarking/accuracy_distribution_sliding_window.png")
 
-    # ─── Save raw results ──────────────────────────────────────────────
+    # Saving results
     results_path = "src/benchmarking/sliding_window_results.txt"
     with open(results_path, 'w') as f:
         f.write("Sliding-Window Cross-Validation Results\n")
