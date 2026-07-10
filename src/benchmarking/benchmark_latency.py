@@ -119,9 +119,7 @@ def run_benchmark():
     
     test_chunks = [np.random.randn(1, 1, 62, 5).astype(np.float32) for _ in range(num_iterations)]
     
-    # ==========================================
-    # 1. Benchmark PyTorch ResNet
-    # ==========================================
+    # 1. Benchmark ResNet
     resnet_latencies = []
     with torch.no_grad():
         for i in range(10):
@@ -139,9 +137,8 @@ def run_benchmark():
             
     resnet_latencies = np.array(resnet_latencies)
     
-    # ==========================================
-    # 2. Benchmark MindToMusic (SSTM + SVC)
-    # ==========================================
+
+    # 2. Benchmark MindToMusic (SSTM-IS)
     m2m_latencies = []
     for i in range(10):
         c_flat = test_chunks[i].reshape(1, -1)
@@ -162,9 +159,7 @@ def run_benchmark():
         
     m2m_latencies = np.array(m2m_latencies)
     
-    # ==========================================
     # Results
-    # ==========================================
     result_text = "="*50 + "\n"
     result_text += "BENCHMARK RESULTS (Time per 1-second chunk)\n"
     result_text += "="*50 + "\n"
