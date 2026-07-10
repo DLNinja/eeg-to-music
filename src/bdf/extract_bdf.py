@@ -27,7 +27,6 @@ def extract_features_from_bdf(bdf_path):
     raw.pick(raw.ch_names[:64])
     signal_64 = raw.get_data()
     
-    # Sampling frequency
     sfreq = raw.info['sfreq']
     
     print(f"  Resampling from {sfreq} Hz to 200 Hz...")
@@ -46,21 +45,19 @@ def extract_features_from_bdf(bdf_path):
         if m != -1:
             signal_200[i] = signal_64_200[m]
             
-    # __________________________________________________
-    # TOPOGRAPHICAL SPHERICAL SPLINE INTERPOLATION (MNE)
-    # __________________________________________________
 
+    # TOPOGRAPHICAL SPHERICAL SPLINE INTERPOLATION (MNE)
     print("  Applying Topographical Spherical Spline Interpolation for missing electrodes...")
     info = mne.create_info(ch_names=proper_casing, sfreq=200, ch_types='eeg')
     raw_seed = mne.io.RawArray(signal_200, info, verbose=False)
     montage = mne.channels.make_standard_montage('standard_1005')
     ch_pos = montage.get_positions()['ch_pos']
     
-    # Manually added CB1 and CB2 (approximate near O1/O2 but lower z/y)
+    # Added CB1 and CB2 near O1/O2 
     if 'O1' in ch_pos:
         cb1_pos = ch_pos['O1'].copy()
-        cb1_pos[2] -= 0.02 # shift down 2cm
-        cb1_pos[1] -= 0.01 # shift back 1cm
+        cb1_pos[2] -= 0.02 
+        cb1_pos[1] -= 0.01 
         ch_pos['CB1'] = cb1_pos
     if 'O2' in ch_pos:
         cb2_pos = ch_pos['O2'].copy()
@@ -80,7 +77,6 @@ def extract_features_from_bdf(bdf_path):
         
     
     print("  Extracting DE STFT features...")
-    # (n_windows, 62, 5)
     stft_data = get_de_stft(signal_200, segment_len=1.0, stft_n=256, fs=200.0)
     
     print("  Smoothing features...")
