@@ -6,11 +6,11 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
     QFileDialog, QPushButton, QMessageBox, QSlider, QScrollBar
 )
-from PyQt5.QtCore import pyqtSignal, Qt, QThread, QMutex, QMutexLocker, QObject
+from PyQt5.QtGui import QPainter, QColor, QPen, QPolygonF
+from PyQt5.QtCore import pyqtSignal, Qt, QThread, QMutex, QMutexLocker, QRectF, QPointF, QObject
 from src.ui.components.piano_roll import PianoRollWidget
 
 class SuppressStderr:
-    """Context manager to suppress C-level stderr (ALSA/Jack warnings)."""
     def __enter__(self):
         self.null_fd = os.open(os.devnull, os.O_RDWR)
         self.save_fd = os.dup(2)
@@ -30,7 +30,7 @@ class MidiPlaybackThread(QThread):
     def __init__(self, synth, events, total_time):
         super().__init__()
         self.synth = synth
-        self.events = events # list of (absolute_time, type, pitch, velocity)
+        self.events = events # (absolute_time, type, pitch, velocity)
         self.total_time = total_time
         
         self.is_playing = False
@@ -51,7 +51,6 @@ class MidiPlaybackThread(QThread):
                     
                     next_time = self.cursor_time + dt
                     
-                    # Dispatch events between self.cursor_time and next_time
                     for ev_time, ev_type, pitch, vel in self.events:
                         if self.cursor_time <= ev_time <= next_time:
                             if ev_type == 'note_on':
@@ -63,7 +62,7 @@ class MidiPlaybackThread(QThread):
                     self.progress_signal.emit(self.cursor_time)
                 else:
                     last_time = time.time()
-            time.sleep(0.01) # 10ms resolution
+            time.sleep(0.01) 
             
         if self.cursor_time > self.total_time:
             self.finished_signal.emit()
@@ -109,7 +108,6 @@ class MusicView(QWidget):
         self.init_worker.moveToThread(self.init_thread)
         self.init_thread.started.connect(self.init_worker.run)
         self.init_worker.finished.connect(self._on_synth_init_finished)
-        # We don't start the thread here anymore; we'll start it in load_data
         
         self._setup_ui()
 
@@ -203,17 +201,15 @@ class MusicView(QWidget):
         
         main_layout.addLayout(mid_bar)
         
-        # Custom Piano Roll Widget
         self.piano_roll = PianoRollWidget()
-        main_layout.addWidget(self.piano_roll, 1) # stretch factor 1
+        main_layout.addWidget(self.piano_roll, 1) 
         
-        # Zoom and Scroll controls below Piano Roll Widget
         bottom_bar = QHBoxLayout()
         bottom_bar.addWidget(QLabel("🔍 Zoom:"))
         
         self.zoom_slider = QSlider(Qt.Horizontal)
-        self.zoom_slider.setMinimum(100) # 1x
-        self.zoom_slider.setMaximum(1000) # 10x
+        self.zoom_slider.setMinimum(100) 
+        self.zoom_slider.setMaximum(1000) 
         self.zoom_slider.setValue(100)
         self.zoom_slider.setFixedWidth(200)
         self.zoom_slider.valueChanged.connect(self.update_scroll_bounds)
@@ -222,7 +218,7 @@ class MusicView(QWidget):
         self.track_scrollbar = QScrollBar(Qt.Horizontal)
         self.track_scrollbar.valueChanged.connect(self.on_track_scroll)
         self.track_scrollbar.setEnabled(False)
-        bottom_bar.addWidget(self.track_scrollbar, 1) # Stretch to fill
+        bottom_bar.addWidget(self.track_scrollbar, 1) 
         
         main_layout.addLayout(bottom_bar)
         
@@ -249,7 +245,7 @@ class MusicView(QWidget):
                 scrollbar.setEnabled(True)
                 scrollbar.setMaximum(int(max_scroll * 1000))
                 scrollbar.setPageStep(int(visible_time * 1000))
-                scrollbar.setSingleStep(int(visible_time * 100)) # 10% step
+                scrollbar.setSingleStep(int(visible_time * 100)) 
             else:
                 scrollbar.setEnabled(False)
                 scrollbar.setValue(0)
@@ -277,7 +273,6 @@ class MusicView(QWidget):
 
     def load_data(self, file_path):
         try:
-            # Initialize synth lazily if not already done
             if self.synth is None and not self.init_thread.isRunning():
                 self.init_thread.start()
             
@@ -355,9 +350,8 @@ class MusicView(QWidget):
         self.time_label.setText(f"{cur_mins:02d}:{cur_secs:02d} / {total_mins:02d}:{total_secs:02d}")
         
         self.piano_roll.update_playhead(pos_s)
-        self.playback_progress_signal.emit(pos_s) # Ensure parent views are updated
+        self.playback_progress_signal.emit(pos_s)
         
-        # Auto-scroll logic if zoomed strictly when playing
         if self.playback_thread is not None and self.playback_thread.isRunning() and not self.playback_thread.is_paused:
             current_scroll = self.track_scrollbar.value() / 1000.0
             width = self.piano_roll.width()
@@ -367,9 +361,8 @@ class MusicView(QWidget):
             pps = base_pps * zoom
             visible_time = track_width / pps if pps > 0 else self.total_time_s
             
-            # If playhead flows out of view to the right, page it forward
             if pos_s > current_scroll + visible_time - 0.2:
-                new_scroll = min(self.total_time_s - visible_time, pos_s - visible_time * 0.1) # scroll so playhead is at 10%
+                new_scroll = min(self.total_time_s - visible_time, pos_s - visible_time * 0.1)
                 if new_scroll > 0:
                     self.track_scrollbar.setValue(int(new_scroll * 1000))
             elif pos_s < current_scroll:
@@ -447,8 +440,7 @@ class SynthInitWorker(QObject):
             with SuppressStderr():
                 synth = fluidsynth.Synth()
                 
-                # FluidSynth settings to prevent trying to open MIDI INPUT devices
-                # which causes the "Expected:1 found:0" error on many systems.
+                # FluidSynth settings 
                 synth.setting('midi.driver', 'none')
                 
                 if os.name == "nt":

@@ -414,5 +414,4 @@ class PipelineView(QWidget):
         self.emotion_plot.update_playhead(time_s)
 
     def set_model(self, model):
-        """Update the classification model."""
         self.model = model

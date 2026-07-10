@@ -22,12 +22,12 @@ def extract_features_from_bdf(bdf_path):
     print(f"Processing: {bdf_path}")
     raw = mne.io.read_raw_bdf(bdf_path, preload=True, verbose=False)
     
-    # We need to map BioSemi 64 to SEED 62 channel order.
+    # We need to map BioSemi 64 to SEED 62 channels.
     # We load the first 64 channels (the actual EEG channels, dropping Status)
     raw.pick(raw.ch_names[:64])
     signal_64 = raw.get_data()
     
-    # Get sampling frequency
+    # Sampling frequency
     sfreq = raw.info['sfreq']
     
     print(f"  Resampling from {sfreq} Hz to 200 Hz...")
